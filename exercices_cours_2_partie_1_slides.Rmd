@@ -1,0 +1,291 @@
+---
+title: "Exercices - Cours 2 - Partie 1"
+subtitle: "Réserve en eau, courbes de rétention, RU/RFU et hystérèse"
+author: "Silvio"
+date: "2026-05-05"
+output:
+  ioslides_presentation:
+    widescreen: true
+    smaller: true
+    transition: faster
+    css: null
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+# Exercice 1 — Calcul de la réserve en eau d'un profil de sol
+
+## Contexte
+
+On souhaite quantifier la **réserve en eau** d'un profil de sol
+limono-argileux sur les 80 premiers centimètres, ainsi que sa
+**variation entre deux dates**.
+
+- **Date 1** : 2026-04-15, sortie d'hiver, sol globalement humide.
+- **Date 2** : 2026-07-20, plein été, dessèchement marqué de la
+  surface par l'évapotranspiration.
+
+Trois dispositifs sont comparés sur **la même grille de profondeurs**
+afin de pouvoir comparer directement les résultats :
+
+- profondeurs de mesure : **15, 30, 45, 60, 75 cm**
+- couche d'intégration : **\(z_\min = 7{,}5\) cm, \(z_\max = 82{,}5\) cm**
+
+## Trois dispositifs comparés
+
+1. **Méthode gravimétrique** *(référence)*
+    - prélèvement → pesée humide \(m_h\) → séchage 105 °C / 24 h →
+      pesée sèche \(m_s\)
+    - \(w = (m_h - m_s)/m_s\), puis \(\theta = w \cdot \rho_b\)
+2. **Sonde à neutron**
+    - mesure un *count ratio* `CR`
+    - calibration linéaire \(\theta = a + b\,CR\)
+3. **Sonde TDR**
+    - mesure la permittivité diélectrique apparente \(K_a\)
+    - équation de Topp *et al.* (1980)
+
+## Lame d'eau et intégration
+
+Pour chaque dispositif, on calcule la lame d'eau \(R\) (mm) sur la
+couche \([z_\min,\,z_\max]\) par intégration numérique du profil
+\(\theta(z)\) :
+
+\[
+R \;=\; 10 \int_{z_\min}^{z_\max} \theta(z)\,\mathrm{d}z
+\]
+
+- le facteur **10** convertit les centimètres en millimètres de lame d'eau
+- interpolation par **spline cubique naturelle** (`splinefun()`)
+- intégration avec `integrate()`
+
+Plages physiques typiques (sol limono-argileux) :
+
+- point de flétrissement permanent : \(\theta_{PFP} \approx 0{,}12\)
+- capacité au champ : \(\theta_{CC} \approx 0{,}32\)
+- saturation : \(\theta_{SAT} \approx 0{,}45\)
+
+## Données — méthode gravimétrique
+
+Densité apparente sèche : \(\rho_b = 1{,}45\) g/cm\(^3\).
+
+```{r grav-data}
+prof <- c(15, 30, 45, 60, 75)
+tab_grav <- data.frame(
+  Profondeur_cm = prof,
+  mh_date1_g = c(172.7, 174.8, 176.8, 178.2, 178.8),
+  ms_date1_g = c(145.0, 145.0, 145.0, 145.0, 145.0),
+  mh_date2_g = c(156.0, 159.9, 167.0, 172.7, 175.9),
+  ms_date2_g = c(145.0, 145.0, 145.0, 145.0, 145.0)
+)
+knitr::kable(tab_grav, caption = "Masses humides et sèches mesurées au laboratoire")
+```
+
+**À faire** : calculer \(w\), puis \(\theta\), puis la lame d'eau \(R\)
+sur la couche \([7{,}5\,;\,82{,}5]\) cm pour chacune des deux dates.
+
+## Données — sonde à neutron
+
+Calibration de l'appareil : \(\theta = 0{,}05 + 0{,}35\,CR\).
+
+```{r neutron-data}
+tab_neutron <- data.frame(
+  Profondeur_cm = prof,
+  CR_date1 = c(0.64, 0.70, 0.77, 0.79, 0.83),
+  CR_date2 = c(0.19, 0.29, 0.49, 0.64, 0.74)
+)
+knitr::kable(tab_neutron, caption = "Count ratios mesurés in situ")
+```
+
+**À faire** : convertir les `CR` en teneurs en eau volumiques \(\theta\),
+puis calculer la lame d'eau \(R\) aux deux dates.
+
+## Données — sonde TDR
+
+Équation de Topp *et al.* (1980) :
+
+\[
+\theta \;=\; -0{,}053 + 0{,}0292\,K_a - 5{,}5\!\cdot\!10^{-4}\,K_a^{2}
+              + 4{,}3\!\cdot\!10^{-6}\,K_a^{3}
+\]
+
+```{r tdr-data}
+tab_tdr <- data.frame(
+  Profondeur_cm = prof,
+  Ka_date1 = c(15, 16, 17, 18, 19),
+  Ka_date2 = c( 6,  8, 12, 15, 17)
+)
+knitr::kable(tab_tdr, caption = "Permittivités diélectriques apparentes mesurées")
+```
+
+**À faire** : appliquer l'équation de Topp, puis calculer la lame
+d'eau \(R\) aux deux dates et la comparer aux deux autres méthodes.
+
+## Questions
+
+1. Pour chacune des trois méthodes, calculer \(\theta(z)\) aux cinq
+   profondeurs, aux deux dates.
+2. Tracer les profils hydriques \(\theta(z)\) interpolés (spline
+   naturelle).
+3. Calculer la lame d'eau \(R\) (mm) sur \([7{,}5\,;\,82{,}5]\) cm
+   aux deux dates, pour chaque méthode.
+4. En déduire le **déficit hydrique** entre les deux dates.
+5. **Comparer** les trois méthodes : les valeurs sont-elles cohérentes ?
+   Quelle méthode est la référence et pourquoi ?
+
+# Exercice 2 — Ajustement de la courbe de rétention de van Genuchten
+
+## Énoncé
+
+On dispose, pour deux types de sols (un **sol limono-sableux** et un
+**sol argilo-limoneux**), de mesures appariées
+\((|h|,\,\theta)\) obtenues sur des échantillons non remaniés en
+laboratoire (presse à membrane / table de succion).
+
+On souhaite ajuster sur chaque jeu de mesures le modèle de rétention
+en eau de **van Genuchten (1980)** :
+
+\[
+\theta(h) = \theta_r + \frac{\theta_s - \theta_r}
+{\bigl[1 + (\alpha\,|h|)^{n}\bigr]^{m}},
+\qquad m = 1 - \frac{1}{n}
+\]
+
+- \(\theta_s\) : teneur en eau à saturation
+- \(\theta_r\) : teneur résiduelle
+- \(\alpha\) (cm\(^{-1}\)) : inverse de la pression d'entrée d'air
+- \(n\) (sans dim.) : étalement du spectre poral
+
+## Données expérimentales
+
+```{r vg-data}
+tab_vg <- data.frame(
+  h_cm = c(1, 5, 10, 30, 50, 100, 330, 1000, 5000, 15000),
+  theta_limono_sableux  = c(0.410, 0.385, 0.345, 0.217, 0.168, 0.124,
+                            0.084, 0.073, 0.066, 0.066),
+  theta_argilo_limoneux = c(0.409, 0.408, 0.400, 0.383, 0.363, 0.333,
+                            0.270, 0.219, 0.174, 0.149)
+)
+knitr::kable(tab_vg, caption = "Mesures de rétention en eau (laboratoire)")
+```
+
+Les pressions sont en valeur absolue (succion), échelle logarithmique.
+
+## Questions
+
+1. Ajuster le modèle de **van Genuchten** sur chacun des deux sols par
+   **moindres carrés non linéaires** (`nls()` dans R).
+2. Reporter les paramètres \(\theta_r,\,\theta_s,\,\alpha,\,n\) ajustés
+   dans un tableau.
+3. Tracer sur **un même graphique** (échelle log en succion) :
+    - les points expérimentaux des deux sols,
+    - les deux courbes de rétention ajustées.
+4. Repérer sur le graphique les abscisses
+   \(|h| = 330\) cm (CC, pF 2.5) et \(|h| = 15\,000\) cm (PFP, pF 4.2).
+5. **Commenter** : quel sol retient le plus d'eau ?
+
+# Exercice 3 — Calcul de la RU et de la RFU
+
+## Énoncé
+
+À partir des paramètres de van Genuchten ajustés à l'exercice 2,
+calculer pour chacun des deux sols :
+
+- la **réserve utile** (RU), eau retenue entre la
+  **capacité au champ** (CC, \(h = -330\) cm, pF 2.5) et le
+  **point de flétrissement permanent** (PFP, \(h = -15\,000\) cm,
+  pF 4.2) :
+
+\[
+\mathrm{RU} \;=\; \bigl(\theta_{CC} - \theta_{PFP}\bigr)\;Z\;10
+\qquad (\text{mm})
+\]
+
+- la **réserve facilement utilisable** (RFU), fraction de la RU
+  effectivement consommable par la plante sans pénalisation de la
+  transpiration :
+
+\[
+\mathrm{RFU} \;=\; \tfrac{2}{3}\,\mathrm{RU}
+\]
+
+## Paramètres
+
+- \(Z\) : épaisseur du sol exploré par les racines (cm).
+  **On prend \(Z = 100\) cm.**
+- \(\mathrm{RFU} = p\,\mathrm{RU}\) avec **\(p = 2/3\)** (valeur
+  classique pour des cultures à enracinement modéré).
+
+## Questions
+
+1. Calculer \(\theta_{CC}\) et \(\theta_{PFP}\) pour chacun des deux
+   sols à partir des paramètres ajustés à l'exercice 2.
+2. En déduire la **RU** (mm pour \(Z = 100\) cm) pour chacun des deux
+   sols.
+3. Calculer la **RFU** correspondante.
+4. Représenter sur un **diagramme en barres** la décomposition
+   RU = RFU + (1/3 RU restant) pour les deux sols.
+5. **Commenter** : quel sol nécessite des irrigations plus fréquentes
+   ? Pourquoi ?
+
+# Exercice 4 — Impact de l'hystérèse sur la RU
+
+## Énoncé
+
+La courbe de rétention en eau d'un sol n'est **pas unique** : elle
+dépend de l'historique hydrique. À une même succion \(|h|\), la
+teneur en eau lors d'un **dessèchement** (drainage, *main drying
+curve*, MDC) est plus élevée que lors d'une **réhumectation**
+(*main wetting curve*, MWC).
+
+Causes physiques principales :
+
+- **effet de "bouteille d'encre"** dans la géométrie poreuse,
+- **angles de contact** différents en avancée et en retrait.
+
+## Approximation de Kool & Parker (1987)
+
+On conserve \(\theta_s\), \(\theta_r\) et \(n\) communs aux deux
+branches de la courbe, et on prend simplement :
+
+\[
+\alpha_w \;\approx\; 2\,\alpha_d
+\]
+
+- \(\alpha_d\) : paramètre de la courbe de **drainage** (MDC)
+- \(\alpha_w\) : paramètre de la courbe de **réhumectation** (MWC)
+
+On illustre ici l'**erreur commise sur l'estimation de la RU** si l'on
+utilise la mauvaise branche.
+
+## Données
+
+On part des **paramètres de van Genuchten du sol argilo-limoneux**
+ajustés à l'exercice 2, en considérant que la courbe ajustée est la
+**courbe principale de drainage** (MDC).
+
+On construit alors la **courbe principale de réhumectation** (MWC)
+en doublant uniquement le paramètre \(\alpha\) :
+
+\[
+\alpha_w \;=\; 2\,\alpha_d, \qquad
+\theta_s^{(w)} = \theta_s^{(d)}, \quad
+\theta_r^{(w)} = \theta_r^{(d)}, \quad
+n^{(w)} = n^{(d)}
+\]
+
+## Questions
+
+1. Tracer sur **un même graphique** (échelle log en succion) les deux
+   branches MDC et MWC du sol argilo-limoneux.
+2. Calculer \(\theta_{CC}\) et \(\theta_{PFP}\) sur **chacune des deux
+   branches**.
+3. En déduire la **RU** estimée sur chacune des deux branches
+   (sur \(Z = 100\) cm).
+4. Calculer l'**écart absolu** (mm) et l'**écart relatif** (%) entre
+   les deux estimations.
+5. **Commenter** : sur quelle branche la CC est-elle définie en
+   pratique ? Quel biais introduit l'hystérèse pour le pilotage des
+   sondes capacitives / TDR au champ ?
+
