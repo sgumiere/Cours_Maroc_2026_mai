@@ -1,0 +1,715 @@
+---
+title: "Exercices - Cours 2 - Partie 1"
+subtitle: "Réserve en eau, courbes de rétention, RU/RFU et hystérèse"
+author: "Silvio"
+date: "2026-05-05"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    theme: readable
+  pdf_document:
+    toc: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 6, fig.height = 5, fig.align = "center")
+```
+
+# Exercice 1 — Calcul de la réserve en eau d'un profil de sol
+
+## Énoncé
+
+On souhaite quantifier la **réserve en eau** d'un profil de sol limono-argileux
+sur les 80 premiers centimètres, ainsi que sa **variation entre deux dates** :
+
+- **Date 1** : 2026-04-15, sortie d'hiver, sol globalement humide.
+- **Date 2** : 2026-07-20, plein été, dessèchement marqué de la surface
+  par l'évapotranspiration.
+
+Trois dispositifs sont comparés. **Pour pouvoir comparer directement les
+trois méthodes, on impose la même grille de profondeurs**
+(15, 30, 45, 60, 75 cm) et la même couche d'intégration
+(\(z_\min = 7.5\) cm, \(z_\max = 82.5\) cm, soit 75 cm d'épaisseur) :
+
+1. La **méthode gravimétrique**.
+   C'est la **méthode de référence**, **la plus précise**, car elle est
+   directe : un échantillon de sol est prélevé à chaque profondeur, pesé
+   humide (\(m_h\)), séché à 105 °C pendant 24 h, puis pesé sec (\(m_s\)).
+   L'humidité pondérale vaut \(w = (m_h - m_s)/m_s\) (g/g) et l'humidité
+   volumique se déduit de la densité apparente sèche \(\rho_b\) :
+   \[
+   \theta = w \times \rho_b
+   \]
+   Toutes les autres méthodes sont en pratique étalonnées sur celle-ci.
+2. Une **sonde à neutron**.
+   Elle fournit un *count ratio* `CR` qu'il faut convertir en teneur en eau
+   volumique \(\theta\) (cm\(^3\)/cm\(^3\)) via une droite de calibration.
+3. Une **sonde TDR**.
+   Elle fournit la permittivité diélectrique apparente \(K_a\) qui est
+   convertie en \(\theta\) via l'équation empirique de Topp *et al.* (1980) :
+   \[
+   \theta = -0.053 + 0.0292\,K_a - 5.5\!\cdot\!10^{-4}K_a^{2}
+                 + 4.3\!\cdot\!10^{-6}K_a^{3}
+   \]
+
+Pour chaque dispositif, on calcule la lame d'eau \(R\) (mm) sur la couche
+\([z_\min,\,z_\max]\) par intégration numérique du profil \(\theta(z)\) :
+\[
+R = 10 \int_{z_\min}^{z_\max} \theta(z)\,\mathrm{d}z
+\]
+(le facteur 10 convertit les centimètres en millimètres de lame d'eau).
+L'intégration est réalisée avec `integrate()` après interpolation par
+spline cubique naturelle (`splinefun()`).
+
+Toutes les valeurs sont dans des plages physiquement plausibles
+(\(\theta\) entre le point de flétrissement \(\sim 0.12\) et la capacité au
+champ \(\sim 0.32\), exceptionnellement jusqu'à 0.40).
+
+---
+
+## Paramètres communs
+
+```{r commun}
+# Bornes physiques typiques pour un sol limono-argileux
+PFP <- 0.12   # point de fletrissement permanent
+CC  <- 0.32   # capacite au champ
+SAT <- 0.45   # saturation
+
+# Deux dates de mesure
+date1 <- as.Date("2026-04-15")   # sortie d'hiver, profil humide
+date2 <- as.Date("2026-07-20")   # plein ete, profil desseche
+
+# Grille de profondeurs COMMUNE aux trois methodes (cm)
+profondeurs <- c(15, 30, 45, 60, 75)
+
+# Couche representee COMMUNE (cm)
+z_inf <- 7.5
+z_sup <- 82.5
+
+# Fonction generique de calcul de la lame d'eau (mm)
+# par spline + integrate sur [z_inf, z_sup] (cm)
+reserve_eau <- function(prof, theta, zi = z_inf, zs = z_sup) {
+  stopifnot(all(theta >= 0 & theta <= 0.55))
+  f_theta <- splinefun(prof, theta, method = "natural")
+  integ   <- integrate(f_theta, lower = zi, upper = zs)
+  list(lame_mm = integ$value * 10,
+       erreur  = integ$abs.error * 10,
+       fonction = f_theta)
+}
+```
+
+---
+
+## Méthode gravimétrique (référence)
+
+La méthode gravimétrique consiste à prélever un échantillon de sol à
+chaque profondeur, à le peser humide (\(m_h\)), à le sécher à 105 °C
+pendant 24 h jusqu'à masse constante, puis à le peser sec (\(m_s\)).
+On obtient l'humidité pondérale :
+\[
+w = \frac{m_h - m_s}{m_s} \quad \text{(g d'eau / g de sol sec)}
+\]
+puis l'humidité volumique en multipliant par la densité apparente
+sèche \(\rho_b\) du sol :
+\[
+\theta = w \cdot \rho_b
+\]
+**C'est la méthode de référence, la plus précise**, parce qu'elle mesure
+directement la masse d'eau évaporée et ne dépend d'aucun étalonnage
+électronique. Toutes les autres méthodes (neutron, TDR, capacitive,
+etc.) sont en pratique calibrées sur des mesures gravimétriques.
+
+### Dispositif
+
+5 prélèvements à **15, 30, 45, 60, 75 cm**.
+
+```{r grav-densite}
+# Densite apparente seche (g/cm3) - sol limono-argileux
+rho_b <- 1.45
+```
+
+### Mesures pondérales
+
+```{r grav-mesures}
+# Date 1 : sortie d'hiver, profil humide
+# Humidite ponderale w = (mh - ms) / ms (g/g)
+mh_d1 <- c(172.7, 174.8, 176.8, 178.2, 178.8)   # masses humides (g)
+ms_d1 <- c(145.0, 145.0, 145.0, 145.0, 145.0)   # masses seches  (g)
+w_d1  <- (mh_d1 - ms_d1) / ms_d1
+theta_g_d1 <- w_d1 * rho_b
+
+# Date 2 : plein ete, surface fortement assechee
+mh_d2 <- c(156.0, 159.9, 167.0, 172.7, 175.9)
+ms_d2 <- c(145.0, 145.0, 145.0, 145.0, 145.0)
+w_d2  <- (mh_d2 - ms_d2) / ms_d2
+theta_g_d2 <- w_d2 * rho_b
+
+knitr::kable(
+  data.frame(Profondeur_cm = profondeurs,
+             w_date1     = round(w_d1, 3),
+             theta_date1 = round(theta_g_d1, 3),
+             w_date2     = round(w_d2, 3),
+             theta_date2 = round(theta_g_d2, 3)),
+  caption = "Mesures gravimetriques (rho_b = 1.45 g/cm3)")
+```
+
+### Calcul des réserves
+
+```{r grav-reserve}
+res_g_1 <- reserve_eau(profondeurs, theta_g_d1)
+res_g_2 <- reserve_eau(profondeurs, theta_g_d2)
+
+cat(sprintf("Reserve gravimetrique - Date 1 (%s) : %.1f mm\n",
+            date1, res_g_1$lame_mm))
+cat(sprintf("Reserve gravimetrique - Date 2 (%s) : %.1f mm\n",
+            date2, res_g_2$lame_mm))
+cat(sprintf("Variation : %+.1f mm\n",
+            res_g_2$lame_mm - res_g_1$lame_mm))
+```
+
+### Profil interpolé
+
+```{r grav-plot, fig.cap="Profils hydriques mesurés par gravimétrie (référence)"}
+zz <- seq(z_inf, z_sup, length.out = 200)
+plot(res_g_1$fonction(zz), zz, type = "l", lwd = 2, col = "navy",
+     ylim = rev(range(zz)), xlim = c(0.05, 0.45),
+     xlab = expression(theta~"(cm"^3*"/cm"^3*")"),
+     ylab = "Profondeur (cm)",
+     main = "Methode gravimetrique")
+lines(res_g_2$fonction(zz), zz, lwd = 2, col = "firebrick")
+points(theta_g_d1, profondeurs, pch = 19, col = "navy")
+points(theta_g_d2, profondeurs, pch = 19, col = "firebrick")
+abline(v = c(PFP, CC), lty = 3, col = "grey50")
+legend("bottomright",
+       legend = c(format(date1), format(date2)),
+       col = c("navy", "firebrick"), lwd = 2, pch = 19, bty = "n")
+```
+
+---
+
+## Mesures avec sonde à neutron
+
+### Dispositif et calibration
+
+La sonde à neutron a un volume d'investigation sphérique d'environ 15 cm
+de rayon. Pour pouvoir comparer les méthodes sur la même grille, on
+installe les sondes aux **mêmes profondeurs que la gravimétrie** :
+**15, 30, 45, 60, 75 cm**. La première profondeur (15 cm) est à la limite
+inférieure d'utilisation de la sonde — on l'accepte ici pour la
+comparaison pédagogique avec la gravimétrie.
+
+La calibration de l'appareil est de la forme \(\theta = a + b\,CR\) :
+
+```{r neutron-calib}
+# Coefficients de calibration (etalonnage gravimetrique de l'appareil)
+a_neutron <- 0.05
+b_neutron <- 0.35
+
+theta_neutron <- function(CR) a_neutron + b_neutron * CR
+```
+
+### Mesures brutes (count ratios)
+
+```{r neutron-mesures}
+# Date 1 : sol humide -> CR eleves, profil croissant avec la profondeur
+CR_d1 <- c(0.64, 0.70, 0.77, 0.79, 0.83)
+# Date 2 : surface assechee -> CR faibles pres de la surface
+CR_d2 <- c(0.19, 0.29, 0.49, 0.64, 0.74)
+
+# Conversion en teneur en eau volumique
+theta_n_d1 <- theta_neutron(CR_d1)
+theta_n_d2 <- theta_neutron(CR_d2)
+
+knitr::kable(
+  data.frame(Profondeur_cm = profondeurs,
+             CR_date1 = CR_d1, theta_date1 = round(theta_n_d1, 3),
+             CR_date2 = CR_d2, theta_date2 = round(theta_n_d2, 3)),
+  caption = "Mesures sonde a neutron")
+```
+
+### Calcul des réserves
+
+```{r neutron-reserve}
+res_n_1 <- reserve_eau(profondeurs, theta_n_d1)
+res_n_2 <- reserve_eau(profondeurs, theta_n_d2)
+
+cat(sprintf("Reserve sonde a neutron - Date 1 (%s) : %.1f mm\n",
+            date1, res_n_1$lame_mm))
+cat(sprintf("Reserve sonde a neutron - Date 2 (%s) : %.1f mm\n",
+            date2, res_n_2$lame_mm))
+cat(sprintf("Variation : %+.1f mm\n",
+            res_n_2$lame_mm - res_n_1$lame_mm))
+```
+
+### Profil interpolé
+
+```{r neutron-plot, fig.cap="Profils hydriques mesurés à la sonde à neutron"}
+zz <- seq(z_inf, z_sup, length.out = 200)
+plot(res_n_1$fonction(zz), zz, type = "l", lwd = 2, col = "steelblue",
+     ylim = rev(range(zz)), xlim = c(0.05, 0.45),
+     xlab = expression(theta~"(cm"^3*"/cm"^3*")"),
+     ylab = "Profondeur (cm)",
+     main = "Sonde a neutron")
+lines(res_n_2$fonction(zz), zz, lwd = 2, col = "tomato")
+points(theta_n_d1, profondeurs, pch = 19, col = "steelblue")
+points(theta_n_d2, profondeurs, pch = 19, col = "tomato")
+abline(v = c(PFP, CC), lty = 3, col = "grey50")
+legend("bottomright",
+       legend = c(format(date1), format(date2)),
+       col = c("steelblue", "tomato"), lwd = 2, pch = 19, bty = "n")
+```
+
+---
+
+## Mesures avec sonde TDR
+
+### Dispositif et équation de Topp
+
+La TDR mesure la permittivité diélectrique apparente \(K_a\). Les sondes
+sont installées **aux mêmes profondeurs que la gravimétrie et la sonde à
+neutron** : **15, 30, 45, 60, 75 cm**.
+
+```{r tdr-equation}
+# Equation de Topp et al. (1980)
+theta_topp <- function(Ka) {
+  -0.053 + 0.0292*Ka - 5.5e-4*Ka^2 + 4.3e-6*Ka^3
+}
+```
+
+### Mesures brutes (permittivité)
+
+```{r tdr-mesures}
+# Date 1 : sol humide (Ka ~15-19 -> theta ~0.28-0.33)
+Ka_d1 <- c(15, 16, 17, 18, 19)
+# Date 2 : surface tres seche (Ka ~6-17 -> theta ~0.10-0.30)
+Ka_d2 <- c( 6,  8, 12, 15, 17)
+
+theta_t_d1 <- theta_topp(Ka_d1)
+theta_t_d2 <- theta_topp(Ka_d2)
+
+knitr::kable(
+  data.frame(Profondeur_cm = profondeurs,
+             Ka_date1 = Ka_d1, theta_date1 = round(theta_t_d1, 3),
+             Ka_date2 = Ka_d2, theta_date2 = round(theta_t_d2, 3)),
+  caption = "Mesures TDR")
+```
+
+### Calcul des réserves
+
+```{r tdr-reserve}
+res_t_1 <- reserve_eau(profondeurs, theta_t_d1)
+res_t_2 <- reserve_eau(profondeurs, theta_t_d2)
+
+cat(sprintf("Reserve TDR - Date 1 (%s) : %.1f mm\n",
+            date1, res_t_1$lame_mm))
+cat(sprintf("Reserve TDR - Date 2 (%s) : %.1f mm\n",
+            date2, res_t_2$lame_mm))
+cat(sprintf("Variation : %+.1f mm\n",
+            res_t_2$lame_mm - res_t_1$lame_mm))
+```
+
+### Profil interpolé
+
+```{r tdr-plot, fig.cap="Profils hydriques mesurés à la sonde TDR"}
+zz <- seq(z_inf, z_sup, length.out = 200)
+plot(res_t_1$fonction(zz), zz, type = "l", lwd = 2, col = "darkgreen",
+     ylim = rev(range(zz)), xlim = c(0.05, 0.45),
+     xlab = expression(theta~"(cm"^3*"/cm"^3*")"),
+     ylab = "Profondeur (cm)",
+     main = "Sonde TDR")
+lines(res_t_2$fonction(zz), zz, lwd = 2, col = "orange")
+points(theta_t_d1, profondeurs, pch = 19, col = "darkgreen")
+points(theta_t_d2, profondeurs, pch = 19, col = "orange")
+abline(v = c(PFP, CC), lty = 3, col = "grey50")
+legend("bottomright",
+       legend = c(format(date1), format(date2)),
+       col = c("darkgreen", "orange"), lwd = 2, pch = 19, bty = "n")
+```
+
+---
+
+## Synthèse comparative
+
+```{r synthese}
+synthese <- data.frame(
+  Dispositif = c("Gravimetrie (ref.)", "Gravimetrie (ref.)",
+                 "Sonde a neutron", "Sonde a neutron",
+                 "TDR", "TDR"),
+  Date       = c(format(date1), format(date2),
+                 format(date1), format(date2),
+                 format(date1), format(date2)),
+  Couche_cm  = rep("7.5-82.5", 6),
+  Lame_mm    = round(c(res_g_1$lame_mm, res_g_2$lame_mm,
+                       res_n_1$lame_mm, res_n_2$lame_mm,
+                       res_t_1$lame_mm, res_t_2$lame_mm), 1)
+)
+knitr::kable(synthese, caption = "Reserves en eau calculees (meme couche pour les 3 methodes)")
+```
+
+```{r synthese-deficit}
+deficit <- data.frame(
+  Dispositif = c("Gravimetrie (ref.)", "Sonde a neutron", "TDR"),
+  Reserve_D1_mm = round(c(res_g_1$lame_mm,
+                          res_n_1$lame_mm,
+                          res_t_1$lame_mm), 1),
+  Reserve_D2_mm = round(c(res_g_2$lame_mm,
+                          res_n_2$lame_mm,
+                          res_t_2$lame_mm), 1),
+  Deficit_mm    = round(c(res_g_2$lame_mm - res_g_1$lame_mm,
+                          res_n_2$lame_mm - res_n_1$lame_mm,
+                          res_t_2$lame_mm - res_t_1$lame_mm), 1)
+)
+knitr::kable(deficit,
+  caption = "Variation entre les deux dates (deficit hydrique estival)")
+```
+
+### Comparaison directe des trois méthodes (Date 1)
+
+```{r compare-plot, fig.cap="Comparaison directe des trois methodes sur la meme grille de profondeurs (Date 1)"}
+zz <- seq(z_inf, z_sup, length.out = 200)
+plot(res_g_1$fonction(zz), zz, type = "l", lwd = 2, col = "navy",
+     ylim = rev(range(zz)), xlim = c(0.05, 0.45),
+     xlab = expression(theta~"(cm"^3*"/cm"^3*")"),
+     ylab = "Profondeur (cm)",
+     main = "Date 1 - profil humide (sortie d'hiver)")
+lines(res_n_1$fonction(zz), zz, lwd = 2, col = "steelblue", lty = 2)
+lines(res_t_1$fonction(zz), zz, lwd = 2, col = "darkgreen", lty = 3)
+points(theta_g_d1, profondeurs, pch = 19, col = "navy")
+points(theta_n_d1, profondeurs, pch = 17, col = "steelblue")
+points(theta_t_d1, profondeurs, pch = 15, col = "darkgreen")
+abline(v = c(PFP, CC), lty = 3, col = "grey50")
+legend("bottomright",
+       legend = c("Gravimetrie (ref.)", "Sonde a neutron", "TDR"),
+       col = c("navy", "steelblue", "darkgreen"),
+       lty = c(1, 2, 3), pch = c(19, 17, 15), lwd = 2, bty = "n")
+```
+
+### Interprétation
+
+Les trois méthodes utilisant désormais **la même grille de profondeurs**
+(15, 30, 45, 60, 75 cm) et la **même couche d'intégration** (7,5-82,5 cm),
+les lames d'eau sont **directement comparables**. L'ordre de grandeur
+attendu pour ~75 cm de sol limono-argileux est **150 à 250 mm** selon
+l'humidité, ce qui est cohérent avec les valeurs obtenues.
+
+La **gravimétrie** sert de référence : c'est la seule méthode qui ne
+requiert pas d'étalonnage électronique. La sonde à neutron et la TDR
+sont elles-mêmes calibrées contre des mesures gravimétriques, ce qui
+explique la cohérence des trois profils. Les petites différences
+observées correspondent au bruit instrumental propre à chaque
+dispositif.
+
+Le **déficit hydrique estival** estimé entre avril et juillet est de
+l'ordre de 60 à 90 mm sur la couche explorée, ce qui est cohérent avec
+une ETP cumulée non compensée par la pluie sur trois mois.
+
+---
+
+# Exercice 2 — Ajustement de la courbe de rétention de van Genuchten
+
+## Énoncé
+
+On dispose, pour deux types de sols (un **sol limono-sableux** et un
+**sol argilo-limoneux**), de mesures appariées
+\((|h|,\,\theta)\) obtenues sur des échantillons non remaniés
+en laboratoire (presse à membrane / table de succion). On souhaite
+ajuster sur chaque jeu de mesures le modèle de rétention en eau de
+**van Genuchten (1980)** :
+\[
+\theta(h) = \theta_r + \frac{\theta_s - \theta_r}
+{\bigl[1 + (\alpha\,|h|)^{n}\bigr]^{m}},
+\qquad m = 1 - \frac{1}{n}
+\]
+où \(\theta_s\) est la teneur en eau à saturation, \(\theta_r\) la
+teneur résiduelle, \(\alpha\) (cm\(^{-1}\)) est lié à l'inverse de la
+pression d'entrée d'air, et \(n\) (sans dimension) caractérise
+l'étalement du spectre poral. L'ajustement se fait par moindres carrés
+non linéaires (`nls()`).
+
+## Données expérimentales
+
+```{r vg-donnees}
+# Pressions appliquees (cm d'eau, valeurs absolues, echelle log)
+h_cm <- c(1, 5, 10, 30, 50, 100, 330, 1000, 5000, 15000)
+
+# Sol limono-sableux (parametres "vrais" approches : ths=0.41,
+#  thr=0.065, alpha=0.075 cm-1, n=1.89) + bruit de mesure
+theta_sable <- c(0.410, 0.385, 0.345, 0.217, 0.168, 0.124,
+                 0.084, 0.073, 0.066, 0.066)
+
+# Sol argilo-limoneux (parametres "vrais" approches : ths=0.41,
+#  thr=0.095, alpha=0.019 cm-1, n=1.31) + bruit de mesure
+theta_argile <- c(0.409, 0.408, 0.400, 0.383, 0.363, 0.333,
+                  0.270, 0.219, 0.174, 0.149)
+
+donnees_vg <- data.frame(h = h_cm,
+                         limono_sableux  = theta_sable,
+                         argilo_limoneux = theta_argile)
+knitr::kable(donnees_vg, caption = "Mesures de retention en eau")
+```
+
+## Modèle van Genuchten et ajustement
+
+```{r vg-fit}
+# Definition du modele
+van_genuchten <- function(h, theta_r, theta_s, alpha, n) {
+  m <- 1 - 1/n
+  theta_r + (theta_s - theta_r) / (1 + (alpha * h)^n)^m
+}
+
+# Ajustement par nls() avec valeurs initiales raisonnables
+fit_sable <- nls(
+  theta_sable ~ van_genuchten(h_cm, theta_r, theta_s, alpha, n),
+  start = list(theta_r = 0.05, theta_s = 0.41, alpha = 0.07, n = 1.8),
+  control = nls.control(maxiter = 200)
+)
+
+fit_argile <- nls(
+  theta_argile ~ van_genuchten(h_cm, theta_r, theta_s, alpha, n),
+  start = list(theta_r = 0.10, theta_s = 0.41, alpha = 0.02, n = 1.3),
+  control = nls.control(maxiter = 200)
+)
+
+params <- rbind(
+  Limono_sableux  = round(coef(fit_sable),  4),
+  Argilo_limoneux = round(coef(fit_argile), 4)
+)
+knitr::kable(params,
+  caption = "Parametres van Genuchten ajustes")
+```
+
+## Visualisation des courbes ajustées
+
+```{r vg-plot, fig.cap="Courbes de retention ajustees (echelle log en succion)"}
+hh <- 10^seq(0, 4.5, length.out = 200)
+
+theta_pred_sable  <- predict(fit_sable,  newdata = list(h_cm = hh))
+theta_pred_argile <- predict(fit_argile, newdata = list(h_cm = hh))
+
+plot(hh, theta_pred_sable, type = "l", lwd = 2, col = "goldenrod",
+     log = "x", ylim = c(0, 0.5),
+     xlab = "|h| (cm)  -  echelle log",
+     ylab = expression(theta~"(cm"^3*"/cm"^3*")"),
+     main = "Courbes de retention de van Genuchten")
+lines(hh, theta_pred_argile, lwd = 2, col = "darkred")
+points(h_cm, theta_sable,  pch = 19, col = "goldenrod")
+points(h_cm, theta_argile, pch = 19, col = "darkred")
+abline(v = c(330, 15000), lty = 3, col = "grey50")
+text(330, 0.02, "pF 2.5\n(CC)",   pos = 4, cex = 0.7, col = "grey40")
+text(15000, 0.02, "pF 4.2\n(PFP)", pos = 2, cex = 0.7, col = "grey40")
+legend("topright",
+       legend = c("Sol limono-sableux", "Sol argilo-limoneux"),
+       col = c("goldenrod", "darkred"), lwd = 2, pch = 19, bty = "n")
+```
+
+---
+
+# Exercice 3 — Calcul de la RU et de la RFU
+
+## Énoncé
+
+À partir des paramètres van Genuchten ajustés à l'exercice 2, on
+souhaite calculer :
+
+- la **réserve utile** (RU), eau retenue entre la **capacité au champ**
+  (CC, h = -330 cm, soit pF 2.5) et le **point de flétrissement
+  permanent** (PFP, h = -15000 cm, soit pF 4.2) :
+  \[
+  \mathrm{RU} = \bigl(\theta_{CC} - \theta_{PFP}\bigr)\,Z\,10
+  \quad \text{(mm)}
+  \]
+- la **réserve facilement utilisable** (RFU), correspondant à la
+  fraction de la RU effectivement consommable par la plante sans
+  pénalisation de la transpiration. On retient ici
+  \(\mathrm{RFU} = \tfrac{2}{3}\,\mathrm{RU}\) (valeur classique pour
+  les cultures à enracinement modéré).
+
+\(Z\) est l'épaisseur du sol exploré par les racines (cm). On prend
+ici **Z = 100 cm**.
+
+## Calcul
+
+```{r ru-rfu}
+# Profondeur exploree par le systeme racinaire (cm)
+Z_racines <- 100
+
+# Fonction donnant theta(h) a partir d'un objet nls
+theta_h <- function(fit, h) {
+  cf <- coef(fit)
+  van_genuchten(h, cf["theta_r"], cf["theta_s"], cf["alpha"], cf["n"])
+}
+
+# Capacite au champ : h = 330 cm  (pF 2.5)
+# Point de fletrissement : h = 15000 cm (pF 4.2)
+h_CC  <- 330
+h_PFP <- 15000
+
+theta_CC_sable  <- theta_h(fit_sable,  h_CC)
+theta_PFP_sable <- theta_h(fit_sable,  h_PFP)
+theta_CC_arg    <- theta_h(fit_argile, h_CC)
+theta_PFP_arg   <- theta_h(fit_argile, h_PFP)
+
+RU_sable  <- (theta_CC_sable  - theta_PFP_sable) * Z_racines * 10
+RU_argile <- (theta_CC_arg    - theta_PFP_arg)   * Z_racines * 10
+
+# RFU : fraction p de la RU
+p_RFU <- 2/3
+RFU_sable  <- p_RFU * RU_sable
+RFU_argile <- p_RFU * RU_argile
+
+resultats <- data.frame(
+  Sol         = c("Limono-sableux", "Argilo-limoneux"),
+  theta_CC    = round(c(theta_CC_sable,  theta_CC_arg),  3),
+  theta_PFP   = round(c(theta_PFP_sable, theta_PFP_arg), 3),
+  RU_mm_par_m = round(c(RU_sable,  RU_argile),  1),
+  RFU_mm_par_m = round(c(RFU_sable, RFU_argile), 1)
+)
+knitr::kable(resultats,
+  caption = "Reserves utile (RU) et facilement utilisable (RFU) sur 1 m de sol")
+```
+
+## Visualisation
+
+```{r ru-rfu-plot, fig.cap="RU et RFU pour les deux sols"}
+op <- par(mar = c(4, 5, 3, 1))
+barplot(rbind(RFU = c(RFU_sable, RFU_argile),
+              RU_residuel = c(RU_sable - RFU_sable,
+                              RU_argile - RFU_argile)),
+        beside = FALSE,
+        names.arg = c("Limono-sableux", "Argilo-limoneux"),
+        col = c("steelblue", "lightblue"),
+        ylab = "Lame d'eau (mm) sur 1 m",
+        main = "Decomposition RU = RFU + reserve de survie",
+        legend.text = c("RFU (2/3 RU)", "1/3 RU restant"),
+        args.legend = list(x = "topleft", bty = "n"))
+par(op)
+```
+
+### Interprétation
+
+Le sol argilo-limoneux possède une **RU bien plus élevée**
+(~120 mm/m) que le sol limono-sableux (~20 mm/m), parce qu'il
+retient beaucoup plus d'eau entre pF 2.5 et pF 4.2 (microporosité
+importante). La RFU correspondante (deux tiers de la RU) donne
+directement le **volant d'eau exploitable** entre deux irrigations
+sans réduire le rendement. Le sol limono-sableux nécessitera donc
+des irrigations plus fréquentes mais de plus petits volumes ; le
+sol argilo-limoneux permet des apports plus espacés.
+
+---
+
+# Exercice 4 — Impact de l'hystérèse sur la RU
+
+## Énoncé
+
+La courbe de rétention en eau d'un sol n'est **pas unique** : elle
+dépend de l'historique hydrique. À une même succion \(|h|\), la
+teneur en eau lors d'un **dessèchement** (drainage, *main drying
+curve*, MDC) est plus élevée que lors d'une **réhumectation** (sorption,
+*main wetting curve*, MWC). Ce phénomène d'hystérèse est dû
+notamment à l'effet de bouteille d'encre dans la géométrie poreuse
+et aux angles de contact différents en avancée et en retrait.
+
+Une approximation très utilisée (Kool & Parker, 1987) consiste à
+conserver \(\theta_s\), \(\theta_r\) et \(n\) communs aux deux
+branches, en prenant simplement :
+\[
+\alpha_{w} \;\approx\; 2\,\alpha_{d}
+\]
+où \(\alpha_d\) est le paramètre de la courbe de drainage et
+\(\alpha_w\) celui de la courbe de réhumectation. On illustre ici
+l'erreur commise sur l'estimation de la RU si l'on utilise la
+mauvaise branche.
+
+## Construction des deux branches
+
+```{r hyst-branches}
+# On prend le sol argilo-limoneux ajuste a l'exercice 2 comme
+# courbe principale de drainage (MDC).
+cf <- coef(fit_argile)
+
+# Parametres MDC (drainage) et MWC (rehumectation)
+alpha_d <- cf["alpha"]
+alpha_w <- 2 * alpha_d        # approximation classique
+
+theta_drainage <- function(h) {
+  van_genuchten(h, cf["theta_r"], cf["theta_s"], alpha_d, cf["n"])
+}
+theta_humectation <- function(h) {
+  van_genuchten(h, cf["theta_r"], cf["theta_s"], alpha_w, cf["n"])
+}
+
+hh <- 10^seq(0, 4.5, length.out = 300)
+
+plot(hh, theta_drainage(hh),    type = "l", lwd = 2, col = "navy",
+     log = "x", ylim = c(0, 0.5),
+     xlab = "|h| (cm)  -  echelle log",
+     ylab = expression(theta~"(cm"^3*"/cm"^3*")"),
+     main = "Hysterese - sol argilo-limoneux")
+lines(hh, theta_humectation(hh), lwd = 2, col = "tomato", lty = 2)
+abline(v = c(330, 15000), lty = 3, col = "grey50")
+legend("topright",
+       legend = c("Drainage  (MDC)", "Rehumectation (MWC)"),
+       col = c("navy", "tomato"), lty = c(1, 2), lwd = 2, bty = "n")
+```
+
+## Effet sur la RU
+
+```{r hyst-ru}
+# RU calculee selon la branche utilisee (sur Z = 100 cm)
+RU_drainage  <- (theta_drainage(h_CC)    - theta_drainage(h_PFP))    * Z_racines * 10
+RU_humect    <- (theta_humectation(h_CC) - theta_humectation(h_PFP)) * Z_racines * 10
+
+ecart_abs <- RU_drainage - RU_humect
+ecart_rel <- 100 * ecart_abs / RU_drainage
+
+tab_hyst <- data.frame(
+  Branche       = c("Drainage (MDC)", "Rehumectation (MWC)"),
+  theta_CC      = round(c(theta_drainage(h_CC),    theta_humectation(h_CC)),    3),
+  theta_PFP     = round(c(theta_drainage(h_PFP),   theta_humectation(h_PFP)),   3),
+  RU_mm_par_m   = round(c(RU_drainage, RU_humect), 1)
+)
+knitr::kable(tab_hyst,
+  caption = "RU estimee selon la branche de la courbe de retention")
+
+cat(sprintf("\nEcart absolu : %.1f mm/m\n", ecart_abs))
+cat(sprintf("Ecart relatif : %.1f %% de la RU de drainage\n", ecart_rel))
+```
+
+### Interprétation
+
+Selon que l'on utilise la branche de drainage ou de réhumectation,
+l'estimation de \(\theta_{CC}\) varie significativement (\(\theta_{PFP}\)
+est, lui, peu sensible à l'hystérèse car proche de \(\theta_r\)). Cela
+se traduit par une **RU sous-estimée d'environ 10 à 30 %** si l'on
+utilise la branche de réhumectation au lieu de la branche de drainage.
+
+En pratique : la **CC** est définie après ressuyage (donc
+**sur la branche de drainage**), c'est cette branche qu'il faut
+utiliser pour calculer la RU. Néanmoins, pour piloter l'irrigation
+*lors d'une phase de ré-humectation* (après pluie ou apport), il
+faut être conscient que le sol "remplit" sa porosité différemment :
+une même mesure de \(\theta\) ne correspond pas à la même succion
+selon le sens du cycle, ce qui peut biaiser l'interprétation des
+sondes capacitives ou TDR si l'on convertit \(\theta\) en
+disponibilité hydrique via une courbe unique.
+
+---
+
+# Pour compiler ce document
+
+Dans R / RStudio :
+
+```r
+rmarkdown::render("exercices_cours_2_partie_1.Rmd")
+```
+
+ou en ligne de commande :
+
+```bash
+Rscript -e 'rmarkdown::render("exercices_cours_2_partie_1.Rmd")'
+```
