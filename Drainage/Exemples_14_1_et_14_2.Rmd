@@ -1,0 +1,669 @@
+---
+title: "Solutions des Exemples 14.1 et 14.2 — Gestion de la nappe phréatique"
+subtitle: "Drainage en régime permanent (Hooghoudt) et transitoire (van Schilfgaarde)"
+author: "Silvio Gumière — GAE-3011 Irrigation et drainage"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    fig_caption: true
+    keep_tex: false
+    latex_engine: pdflatex
+header-includes:
+  - \usepackage[utf8]{inputenc}
+  - \usepackage[T1]{fontenc}
+  - \usepackage[french]{babel}
+  - \usepackage{amsmath, amssymb}
+  - \usepackage{booktabs}
+  - \usepackage{siunitx}
+  - \usepackage{xcolor}
+  - \usepackage{tikz}
+  - \usetikzlibrary{patterns, decorations.pathmorphing, arrows.meta}
+  - \usepackage{fancyhdr}
+  - \pagestyle{fancy}
+  - \fancyhead[L]{GAE-3011}
+  - \fancyhead[R]{Exemples 14.1 et 14.2}
+  - \newcommand{\md}{\,\mathrm{m/d}}
+  - \newcommand{\mmd}{\,\mathrm{mm/d}}
+geometry: margin=2.5cm
+fontsize: 11pt
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo       = TRUE,
+  message    = FALSE,
+  warning    = FALSE,
+  fig.align  = "center",
+  fig.width  = 6.5,
+  fig.height = 4.2,
+  out.width  = "85%"
+)
+options(digits = 4, scipen = 999)
+```
+
+\newpage
+
+# Introduction et contexte théorique
+
+Ce document résout en détail les **exemples 14.1 et 14.2** du chapitre 14
+(*Water Table Management*) de Huffman *et al.* (2013, *Soil and Water Conservation Engineering*, 7$^{\text{e}}$ éd., ASABE).
+Il met en \oe uvre, sous R, les méthodes classiques de dimensionnement de
+l'écartement des drains agricoles enterrés :
+
+- **Exemple 14.1 — régime permanent** : équation de **Hooghoudt** corrigée par
+  la profondeur équivalente $d_e$ de van der Molen \& Wesseling (1991) ;
+- **Exemple 14.2 — régime transitoire** : équation de **van Schilfgaarde**
+  (1963) pour la chute de la nappe.
+
+Ces deux méthodes répondent à la même question pratique :
+> *« À quelle distance dois-je espacer mes drains parallèles pour que la nappe
+> reste assez basse et permettre la culture ? »*
+
+La différence tient à l'hypothèse hydrologique : pluie continue (Hooghoudt)
+ou évènement ponctuel suivi d'un abaissement de la nappe (van Schilfgaarde).
+
+## Données communes aux deux exemples
+
+Le champ étudié possède deux zones distinctes :
+
+| Paramètre | Symbole | Sol 1 (ouest) | Sol 2 (est) |
+|---|---|---|---|
+| Épaisseur totale du sol | — | 2,8 m | 1,8 m |
+| Conductivité hydraulique saturée | $K$ | 1,00 m/d | 0,75 m/d |
+| Profondeur des drains | — | 1,0 m | 1,0 m |
+| Distance drain $\to$ couche imperméable | $d$ | **1,8 m** | **0,8 m** |
+| Rayon effectif (drain plastique 114 mm) | $r_e$ | 0,0151 m | 0,0151 m |
+
+```{r donnees-communes}
+# ============================================================
+# Données géométriques et hydrauliques des deux sols
+# ============================================================
+sols <- data.frame(
+  nom          = c("Sol 1 (ouest)", "Sol 2 (est)"),
+  K_md         = c(1.00, 0.75),    # conductivité hydraulique [m/j]
+  d_m          = c(1.80, 0.80),    # distance drain -> couche imperméable [m]
+  epaisseur_m  = c(2.80, 1.80)     # épaisseur totale du profil [m]
+)
+
+# Paramètres constants
+prof_drain <- 1.0     # profondeur d'enfouissement du drain [m]
+re         <- 0.0151  # rayon effectif d'un drain PEHD corrugé de 114 mm OD [m]
+                      # (Tableau 14.3 du manuel)
+
+knitr::kable(sols, col.names = c("Sol", "K (m/j)", "d (m)", "Épaisseur (m)"),
+             caption = "Propriétés des deux zones de sol du champ")
+```
+
+\newpage
+
+# Outils communs : la profondeur équivalente $d_e$
+
+L'équation originale de Hooghoudt suppose un écoulement **horizontal** vers
+une tranchée drainante traversant toute l'épaisseur saturée. En pratique, on
+draine avec des **tuyaux** : près du drain, les lignes de courant
+**convergent** verticalement, ce qui équivaut à *réduire* l'épaisseur de sol
+disponible pour l'écoulement. On remplace donc $d$ par une **profondeur
+équivalente** $d_e \le d$ donnée par van der Molen \& Wesseling (1991) :
+
+\begin{equation}
+d_e = \dfrac{\pi\, S}{8\,\left[\ln\!\left(\dfrac{S}{\pi\, r_e}\right) + F(x)\right]},
+\qquad
+x = \dfrac{2\pi\, d}{S}
+\label{eq:de}
+\end{equation}
+
+avec, pour $x < 0{,}5$, l'approximation très précise (équation 14.8c) :
+
+\begin{equation}
+F(x) \approx \dfrac{\pi^{2}}{4\,x} + \ln\!\left(\dfrac{x}{2\pi}\right)
+\label{eq:Fxc}
+\end{equation}
+
+et, pour $x \ge 0{,}5$, la série rapidement convergente (équation 14.8b) :
+
+\begin{equation}
+F(x) = \sum_{i=1,3,5,\ldots}^{\infty} \dfrac{4\,e^{-2ix}}{i\,(1 - e^{-2ix})}
+\label{eq:Fxs}
+\end{equation}
+
+Comme $S$ apparaît à la fois dans le membre de gauche (par $d_e$) et de
+droite (par $x$), la résolution est **itérative**.
+
+```{r fonctions-de}
+# ============================================================
+# Fonctions utilitaires pour la profondeur équivalente d_e
+# ============================================================
+
+# F(x) - approximation pour x < 0.5 (Éq. 14.8c)
+F_approx <- function(x) {
+  (pi^2) / (4 * x) + log(x / (2 * pi))
+}
+
+# F(x) - série convergente pour x >= 0.5 (Éq. 14.8b)
+F_serie <- function(x, n_termes = 25) {
+  i <- seq(1, 2 * n_termes - 1, by = 2)   # i = 1, 3, 5, ...
+  sum( 4 * exp(-2 * i * x) / ( i * (1 - exp(-2 * i * x)) ) )
+}
+
+# Fonction F(x) "intelligente" qui choisit la bonne formule
+F_x <- function(x) {
+  if (x < 0.5) F_approx(x) else F_serie(x)
+}
+
+# Profondeur équivalente d_e (Éq. 14.8a)
+de_vanMolen <- function(S, d, re) {
+  x  <- 2 * pi * d / S
+  Fx <- F_x(x)
+  pi * S / (8 * (log(S / (pi * re)) + Fx))
+}
+```
+
+\newpage
+
+# Exemple 14.1 — Drainage en régime permanent (Hooghoudt)
+
+## Énoncé
+
+> *On veut dimensionner un système de drainage parallèle pour le champ
+> ci-dessus, en supposant des conditions de régime permanent
+> (pluie continue et faible). Le sol est minéral et porte des grandes
+> cultures, sans entrée d'eau de surface (« no surface inlets »).*
+
+## Bases théoriques
+
+À l'état permanent, toute la pluie $R$ qui tombe entre deux drains doit
+sortir par ces drains. En appliquant la loi de Darcy et l'hypothèse de
+Dupuit–Forchheimer (écoulement quasi-horizontal, gradient hydraulique égal
+à la pente de la nappe), on intègre :
+
+\begin{equation}
+K\,h\,\frac{dh}{dx} = R\!\left(\frac{S}{2} - x\right)
+\label{eq:darcy}
+\end{equation}
+
+entre $x=0$ (au-dessus du drain, $h=d$) et $x=S/2$ (mi-distance, $h=d+b$),
+ce qui donne l'**équation de l'ellipse de Hooghoudt** :
+
+\begin{equation}
+\boxed{\;R = \dfrac{8\,K\,d_e\,b + 4\,K\,b^{2}}{S^{2}}
+\quad\Longleftrightarrow\quad
+S = \sqrt{\dfrac{8\,K\,d_e\,b + 4\,K\,b^{2}}{R}}\;}
+\label{eq:hooghoudt}
+\end{equation}
+
+où
+
+- $R$ = **coefficient de drainage** (pluie nette à évacuer en 24 h) [m/j] ;
+- $K$ = conductivité hydraulique saturée [m/j] ;
+- $b$ = hauteur de la nappe au-dessus du drain à mi-distance entre drains [m] ;
+- $d_e$ = profondeur équivalente jusqu'à la couche imperméable [m] ;
+- $S$ = écartement entre drains [m].
+
+\begin{center}
+\begin{tikzpicture}[scale=0.85]
+% sol
+\fill[brown!15] (0,0) rectangle (10,3.5);
+\draw[thick] (0,3.5) -- (10,3.5);
+\foreach \x in {0.2,0.7,...,9.7}
+  \draw[->,blue!70,thin] (\x,4.3) -- (\x,3.7) node[midway,above=4pt]{};
+\node[blue!70] at (5,4.6) {\large $R$ (pluie)};
+% nappe phréatique
+\draw[blue,thick] (0,1.5) .. controls (2.5,2.6) and (7.5,2.6) .. (10,1.5);
+\node[blue] at (5,2.95) {Nappe phréatique};
+% couche imperméable
+\draw[thick,pattern=north east lines] (0,-0.3) rectangle (10,0);
+\node at (5,-0.55) {Couche imperméable};
+% drains
+\draw[fill=gray!50] (0,1.5) circle (0.18);
+\draw[fill=gray!50] (10,1.5) circle (0.18);
+\node[below] at (0,1.25) {drain};
+\node[below] at (10,1.25) {drain};
+% cotes
+\draw[<->] (0.5,0.0) -- (0.5,1.5) node[midway,left]{$d$};
+\draw[<->] (5,1.5) -- (5,2.55) node[midway,right]{$b$};
+\draw[<->] (0,4.0) -- (10,4.0) node[midway,above]{$S$ (écartement)};
+\end{tikzpicture}
+\end{center}
+
+## Choix des paramètres de design
+
+D'après le **tableau 14.2** du manuel, pour un sol minéral cultivé en
+grandes cultures sans entrée d'eau de surface, on prend :
+$$ DC = R = 12 \text{ mm/j} = 0{,}012 \text{ m/j}. $$
+
+La profondeur du drain est fixée à 1 m (compromis entre coût d'installation
+et couverture suffisante au-dessus du drain). On exige que la nappe ne monte
+**pas plus haut que 0,3 m sous la surface**, ce qui donne :
+$$ b = 1{,}0 - 0{,}3 = 0{,}7 \text{ m}. $$
+
+```{r param-141}
+R   <- 0.012   # coefficient de drainage [m/j]  (= 12 mm/j)
+b   <- 0.7     # hauteur de la nappe au-dessus du drain à mi-distance [m]
+```
+
+## Algorithme itératif
+
+\begin{enumerate}
+\item Initialiser $d_e \gets d$ (cas sans convergence).
+\item Calculer $S$ via l'équation~\eqref{eq:hooghoudt}.
+\item Mettre à jour $d_e$ via les équations~\eqref{eq:de}–\eqref{eq:Fxc}.
+\item Recalculer $S$ ; itérer jusqu'à convergence (généralement 3–4 itérations).
+\end{enumerate}
+
+```{r hooghoudt-fonction}
+# ============================================================
+# Résolution itérative de l'équation de Hooghoudt
+# ============================================================
+hooghoudt <- function(K, d, b, R, re, tol = 1e-4, itmax = 20, verbose = TRUE) {
+
+  # Initialisation : on suppose de = d (pas de correction de convergence)
+  de_courant <- d
+  S          <- sqrt( (8*K*de_courant*b + 4*K*b^2) / R )
+  historique <- data.frame(iter = 0, x = NA, F_x = NA, de = de_courant, S = S)
+
+  for (k in 1:itmax) {
+    x   <- 2 * pi * d / S
+    Fx  <- F_x(x)
+    de_nouveau <- pi * S / (8 * (log(S / (pi * re)) + Fx))
+    S_nouveau  <- sqrt( (8*K*de_nouveau*b + 4*K*b^2) / R )
+
+    historique <- rbind(historique,
+      data.frame(iter = k, x = x, F_x = Fx,
+                 de = de_nouveau, S = S_nouveau))
+
+    if (abs(S_nouveau - S) < tol) {
+      S  <- S_nouveau
+      de_courant <- de_nouveau
+      break
+    }
+    S          <- S_nouveau
+    de_courant <- de_nouveau
+  }
+
+  if (verbose) print(historique, row.names = FALSE)
+  list(S = S, de = de_courant, historique = historique)
+}
+```
+
+## Application au **Sol 1**
+
+```{r hooghoudt-sol1}
+cat("\n--- Sol 1 : K = 1.00 m/j, d = 1.8 m ---\n")
+res_S1 <- hooghoudt(K = sols$K_md[1], d = sols$d_m[1],
+                    b = b, R = R, re = re)
+
+cat(sprintf("\nRésultat Sol 1 : S = %.2f m,  d_e = %.2f m\n",
+            res_S1$S, res_S1$de))
+```
+
+**Lecture :** on retrouve bien la valeur du manuel ($S \approx 26{,}0$ m,
+$d_e \approx 1{,}10$ m). La première itération surestime $S$ ($31{,}7$ m)
+parce qu'elle néglige la convergence verticale ; la correction $d_e$
+diminue ensuite l'épaisseur effective et rapproche les drains.
+
+## Application au **Sol 2**
+
+```{r hooghoudt-sol2}
+cat("\n--- Sol 2 : K = 0.75 m/j, d = 0.8 m ---\n")
+res_S2 <- hooghoudt(K = sols$K_md[2], d = sols$d_m[2],
+                    b = b, R = R, re = re)
+
+cat(sprintf("\nRésultat Sol 2 : S = %.2f m,  d_e = %.2f m\n",
+            res_S2$S, res_S2$de))
+```
+
+**Interprétation** : le Sol 2 a une **conductivité plus faible** (0,75 m/j
+au lieu de 1,0) *et* une couche imperméable beaucoup plus proche
+($d=0{,}8$ m). Les deux effets diminuent la transmissivité de l'aquifère,
+donc l'écartement admissible : $S \approx 18{,}3$ m.
+
+## Convergence visualisée
+
+```{r conv-141, fig.cap = "Convergence de l'algorithme itératif pour les deux sols (Exemple 14.1)."}
+par(mfrow = c(1, 2), mar = c(4, 4, 2, 1))
+
+plot(res_S1$historique$iter, res_S1$historique$S, type = "b",
+     pch = 19, col = "steelblue", lwd = 2,
+     xlab = "Itération", ylab = "Écartement S (m)",
+     main = "Sol 1 — K = 1 m/j")
+abline(h = 26.0, lty = 2, col = "red")
+text(max(res_S1$historique$iter), 26, "Manuel : 26,0 m",
+     pos = 4, col = "red", cex = 0.8, offset = -1.5)
+
+plot(res_S2$historique$iter, res_S2$historique$S, type = "b",
+     pch = 19, col = "darkorange", lwd = 2,
+     xlab = "Itération", ylab = "Écartement S (m)",
+     main = "Sol 2 — K = 0,75 m/j")
+abline(h = 18.3, lty = 2, col = "red")
+text(max(res_S2$historique$iter), 18.3, "Manuel : 18,3 m",
+     pos = 4, col = "red", cex = 0.8, offset = -1.5)
+
+par(mfrow = c(1, 1))
+```
+
+\newpage
+
+# Exemple 14.2 — Drainage en régime transitoire (van Schilfgaarde)
+
+## Énoncé
+
+> *Pour le même champ qu'à l'exemple 14.1, déterminer l'écartement nécessaire
+> pour **abaisser la nappe de la surface du sol jusqu'à 0,3 m sous la surface
+> en 1 jour**. La porosité drainable mesurée en laboratoire pour les 0,3 m
+> supérieurs vaut $f = 0{,}04\;\mathrm{m^3/m^3}$.*
+
+## Bases théoriques
+
+Pour un évènement pluvieux intense, on ne peut plus supposer la stationnarité.
+L'écoulement latéral non saturé en transitoire est gouverné par l'équation
+non linéaire de **Boussinesq** :
+
+\begin{equation}
+f\,\dfrac{\partial h}{\partial t}
+= K\,\dfrac{\partial}{\partial x}\!\left[h\,\dfrac{\partial h}{\partial x}\right]
+\label{eq:boussinesq}
+\end{equation}
+
+où $f$ est la **porosité drainable** (fraction de volume des pores qui se
+vide effectivement quand la nappe descend ; $f \ll \phi$ porosité totale).
+
+Van Schilfgaarde (1963) en a tiré une solution analytique reliant
+l'écartement $S$ au temps $t$ nécessaire pour faire passer la nappe de
+$b_o$ à $b$ au-dessus du drain :
+
+\begin{equation}
+\boxed{\;S = \sqrt{\dfrac{9\,K\,t\,d_e}
+{f\,\ln\!\left[\dfrac{b_o\,(2\,d_e + b)}{b\,(2\,d_e + b_o)}\right]}}\;}
+\label{eq:vanSchilf}
+\end{equation}
+
+\begin{center}
+\begin{tikzpicture}[scale=0.85]
+\fill[brown!15] (0,0) rectangle (10,3.6);
+\draw[thick] (0,3.6) -- (10,3.6);
+% nappes
+\draw[blue!40,thick,dashed] (0,1.5) .. controls (2.5,3.4) and (7.5,3.4) .. (10,1.5);
+\node[blue!40] at (8,3.1) {$b_o$};
+\draw[blue,thick] (0,1.5) .. controls (2.5,2.55) and (7.5,2.55) .. (10,1.5);
+\node[blue] at (5,2.3) {$b$};
+% couche imperméable
+\draw[thick,pattern=north east lines] (0,-0.3) rectangle (10,0);
+% drains
+\draw[fill=gray!50] (0,1.5) circle (0.18);
+\draw[fill=gray!50] (10,1.5) circle (0.18);
+% cotes
+\draw[<->] (-0.5,0.0) -- (-0.5,1.5) node[midway,left]{$d_e$};
+\draw[<->] (0,4.0) -- (10,4.0) node[midway,above]{$S$};
+% flèche temps
+\draw[->,thick,red] (5,3.35) -- (5,2.6);
+\node[red,right] at (5,2.95) {$t = $ 24 h};
+\end{tikzpicture}
+\end{center}
+
+Le **coefficient de drainage** s'exprime alors en fonction de la chute
+imposée à la nappe :
+
+\begin{equation}
+DC = f\,(b_o - b)
+\label{eq:DCtransitoire}
+\end{equation}
+
+Dans notre cas : $DC = 0{,}04 \times (1{,}0 - 0{,}7) = 0{,}012$ m/j
+$= 12$ mm/j — par coïncidence, exactement la même valeur que le DC permanent !
+
+## Choix des paramètres de design
+
+| Variable | Valeur | Signification |
+|---|---|---|
+| $b_o$ | 1,0 m | Hauteur initiale de la nappe au-dessus du drain (la nappe affleure la surface, et le drain est à 1 m) |
+| $b$   | 0,7 m | Hauteur finale (nappe rabaissée à 0,3 m sous la surface) |
+| $t$   | 1 jour | Temps imparti pour le rabattement |
+| $f$   | 0,04  | Porosité drainable de la zone qui se vide |
+
+```{r param-142}
+bo <- 1.0     # hauteur initiale de la nappe au-dessus du drain [m]
+b2 <- 0.7     # hauteur finale (au-dessus du drain) [m]
+t  <- 1.0     # durée de rabattement [j]
+f  <- 0.04    # porosité drainable [m3/m3]
+```
+
+## Algorithme itératif
+
+Comme à l'exemple 14.1, l'équation \eqref{eq:vanSchilf} contient $d_e$ qui
+dépend lui-même de $S$. On itère donc selon le même schéma.
+
+```{r vanschilf-fonction}
+# ============================================================
+# Résolution itérative de l'équation de van Schilfgaarde (1963)
+# ============================================================
+vanSchilfgaarde <- function(K, d, bo, b, f, t, re,
+                            tol = 1e-4, itmax = 20, verbose = TRUE) {
+
+  # Initialisation : pas de correction de convergence (de = d)
+  de_courant <- d
+  num <- 9 * K * t * de_courant
+  den <- f * log( (bo * (2 * de_courant + b)) /
+                  ( b * (2 * de_courant + bo)) )
+  S   <- sqrt(num / den)
+  historique <- data.frame(iter = 0, x = NA, F_x = NA, de = de_courant, S = S)
+
+  for (k in 1:itmax) {
+    x  <- 2 * pi * d / S
+    Fx <- F_x(x)
+    de_nouveau <- pi * S / (8 * (log(S / (pi * re)) + Fx))
+
+    num <- 9 * K * t * de_nouveau
+    den <- f * log( (bo * (2 * de_nouveau + b)) /
+                    ( b * (2 * de_nouveau + bo)) )
+    S_nouveau <- sqrt(num / den)
+
+    historique <- rbind(historique,
+      data.frame(iter = k, x = x, F_x = Fx,
+                 de = de_nouveau, S = S_nouveau))
+
+    if (abs(S_nouveau - S) < tol) {
+      S          <- S_nouveau
+      de_courant <- de_nouveau
+      break
+    }
+    S          <- S_nouveau
+    de_courant <- de_nouveau
+  }
+
+  if (verbose) print(historique, row.names = FALSE)
+  list(S = S, de = de_courant, historique = historique)
+}
+```
+
+## Application au **Sol 1**
+
+```{r vanschilf-sol1}
+cat("\n--- Sol 1 : K = 1.00 m/j, d = 1.8 m ---\n")
+res_T1 <- vanSchilfgaarde(K = sols$K_md[1], d = sols$d_m[1],
+                          bo = bo, b = b2, f = f, t = t, re = re)
+cat(sprintf("\nRésultat Sol 1 : S = %.2f m,  d_e = %.2f m\n",
+            res_T1$S, res_T1$de))
+```
+
+## Application au **Sol 2**
+
+```{r vanschilf-sol2}
+cat("\n--- Sol 2 : K = 0.75 m/j, d = 0.8 m ---\n")
+res_T2 <- vanSchilfgaarde(K = sols$K_md[2], d = sols$d_m[2],
+                          bo = bo, b = b2, f = f, t = t, re = re)
+cat(sprintf("\nRésultat Sol 2 : S = %.2f m,  d_e = %.2f m\n",
+            res_T2$S, res_T2$de))
+```
+
+\newpage
+
+# Comparaison et discussion
+
+## Tableau récapitulatif
+
+```{r recap}
+recap <- data.frame(
+  Sol          = c("Sol 1 (K=1.00 m/j)", "Sol 2 (K=0.75 m/j)"),
+  S_perm_m     = c(res_S1$S, res_S2$S),
+  S_trans_m    = c(res_T1$S, res_T2$S),
+  Manuel_perm  = c(26.0, 18.3),
+  Manuel_trans = c(31.8, 22.3)
+)
+knitr::kable(recap, digits = 2,
+  col.names = c("Sol",
+                "S — Hooghoudt (m)", "S — van Schilfgaarde (m)",
+                "Manuel — Hooghoudt", "Manuel — van Schilf."),
+  caption = "Récapitulatif des écartements calculés vs. valeurs du manuel.")
+```
+
+L'écart entre nos résultats et le manuel reste **inférieur à 0,1 m**, ce qui
+est l'erreur typique due aux arrondis intermédiaires effectués à la main.
+
+## Pourquoi le régime transitoire donne-t-il un $S$ plus grand ?
+
+Dans cet exercice, $DC_{\text{transitoire}} = f(b_o - b) = 0{,}012$ m/j
+**égale** $DC_{\text{permanent}}$. On pourrait donc s'attendre à des
+écartements semblables. Or van Schilfgaarde donne $S \approx 32$ m vs
+$26$ m pour Hooghoudt.
+
+La raison est la **faible porosité drainable** ($f = 0{,}04$) : pour évacuer
+le même volume d'eau, seuls 4 % du volume de sol participe au stockage, ce
+qui rend la chute de la nappe rapide pour un flux donné. Concrètement, on
+peut se permettre des drains *plus éloignés* car peu d'eau doit
+effectivement être déplacée pour faire baisser la nappe.
+
+## Effet de la conductivité et de la couche imperméable
+
+```{r sensibilite, fig.cap = "Sensibilité de S à la conductivité hydraulique K, pour b = 0,7 m, R = 12 mm/j, d = 1,8 m (Hooghoudt)."}
+K_seq <- seq(0.2, 2.5, by = 0.05)
+S_seq <- sapply(K_seq, function(Ki) {
+  hooghoudt(K = Ki, d = 1.8, b = 0.7, R = 0.012, re = 0.0151,
+            verbose = FALSE)$S
+})
+
+plot(K_seq, S_seq, type = "l", lwd = 2, col = "steelblue",
+     xlab = "Conductivité hydraulique K (m/j)",
+     ylab = "Écartement S (m)",
+     main = "Hooghoudt : écartement vs. conductivité")
+grid()
+points(c(1.0, 0.75), c(res_S1$S, res_S2$S),
+       pch = 21, bg = c("steelblue", "darkorange"), cex = 1.6)
+text(1.0,  res_S1$S, "Sol 1", pos = 4)
+text(0.75, res_S2$S, "Sol 2", pos = 4)
+```
+
+L'écartement varie globalement comme $\sqrt{K}$ : plus le sol est
+perméable, plus on peut écarter les drains, mais avec un rendement
+décroissant (racine carrée).
+
+## Profil de la nappe à l'état permanent (Sol 1)
+
+L'équation 14.5 permet de tracer le profil $h(x)$ entre deux drains :
+
+\begin{equation}
+h(x)^2 = d^2 + \frac{R\,(S\,x - x^{2})}{K}
+\label{eq:profil}
+\end{equation}
+
+```{r profil, fig.cap = "Profil de la nappe phréatique entre deux drains parallèles, Sol 1 (régime permanent)."}
+S  <- res_S1$S
+K  <- sols$K_md[1]
+d  <- sols$d_m[1]
+xs <- seq(0, S, length.out = 200)
+h  <- sqrt( d^2 + R * (S * xs - xs^2) / K )
+
+plot(xs, h, type = "l", lwd = 2.5, col = "steelblue", ylim = c(0, 3.0),
+     xlab = "Position horizontale x (m)",
+     ylab = "Hauteur de la nappe au-dessus de la couche imperméable (m)",
+     main = "Profil de la nappe entre deux drains — Sol 1")
+abline(h = d, col = "gray60", lty = 2)
+abline(h = d + b, col = "red", lty = 2)
+abline(h = 2.8, col = "saddlebrown", lwd = 2)   # surface du sol
+points(c(0, S), c(d, d), pch = 19, cex = 2)     # drains
+text(0, d, "Drain", pos = 3, offset = 0.6, cex = 0.9)
+text(S/2, d + b + 0.05, sprintf("Sommet de la nappe (h = d + b = %.2f m)", d+b),
+     pos = 3, col = "red", cex = 0.85)
+text(S/2, 2.8 + 0.05, "Surface du sol", pos = 3,
+     col = "saddlebrown", cex = 0.85)
+legend("bottomright",
+       legend = c("Nappe", "Niveau du drain", "Surface du sol"),
+       col = c("steelblue", "gray60", "saddlebrown"),
+       lty = c(1, 2, 1), lwd = c(2.5, 1, 2), bty = "n")
+```
+
+On voit que la nappe culmine à $h = d + b = 2{,}5$ m, soit **0,3 m sous la
+surface** ($2{,}8 - 2{,}5 = 0{,}3$) — la marge d'aération minimale exigée
+pour les grandes cultures (Evans \& Fausey, 1999).
+
+\newpage
+
+# Vérifications additionnelles
+
+## Reproduction explicite des calculs du manuel (Exemple 14.1, Sol 1)
+
+Pour le lecteur qui souhaite comparer pas-à-pas avec l'énoncé du manuel :
+
+```{r verif-manuel}
+# Itération 1 : on suppose de = d = 1.8 m
+K  <- 1.0;  d <- 1.8;  b <- 0.7;  R <- 0.012;  re <- 0.0151
+de <- 1.8
+S1 <- sqrt( (8*K*de*b + 4*K*b^2) / R )
+cat(sprintf("Étape 1 : S = %.2f m  (manuel : 31.7 m)\n", S1))
+
+# Itération 2 : on met à jour x et F(x)
+x  <- 2*pi*d / S1
+Fx <- F_approx(x)
+cat(sprintf("Étape 2 : x = %.3f, F(x) = %.2f  (manuel : x=0.36, F=4.0)\n",
+            x, Fx))
+
+# Itération 3 : nouvelle valeur de d_e
+de2 <- pi*S1 / (8*(log(S1/(pi*re)) + Fx))
+cat(sprintf("Étape 3 : d_e = %.2f m  (manuel : 1.18 m)\n", de2))
+
+# Itération 4 : on recalcule S avec le nouveau d_e
+S2 <- sqrt( (8*K*de2*b + 4*K*b^2) / R )
+cat(sprintf("Étape 4 : S = %.2f m  (manuel : 26.7 m)\n", S2))
+```
+
+Chaque étape concorde au centième près avec les valeurs publiées.
+
+# Conclusions pédagogiques
+
+\begin{enumerate}
+\item L'\textbf{équation de Hooghoudt} reste l'outil de base pour
+   dimensionner un drainage en climat humide à pluie modérée.
+\item La \textbf{correction de van der Molen \& Wesseling} (1991) sur la
+   profondeur équivalente $d_e$ est \emph{indispensable} dès qu'on draine
+   par des tuyaux (et non par des fossés ouverts) ; elle peut réduire $S$
+   de 20–40 \%.
+\item L'\textbf{équation de van Schilfgaarde} (1963) est mieux adaptée aux
+   régions où surviennent des pluies intenses ponctuelles ; elle se base
+   sur la \emph{vitesse de rabattement} de la nappe et fait intervenir la
+   \emph{porosité drainable} $f$, paramètre souvent mal connu.
+\item La résolution est \textbf{itérative} mais converge typiquement en
+   3–4 itérations grâce au caractère faiblement couplé entre $S$ et $d_e$.
+\item La conductivité hydraulique $K$ est le paramètre dominant : une
+   incertitude de $\pm 20\,\%$ sur $K$ se traduit par environ
+   $\pm 10\,\%$ sur $S$ (effet en $\sqrt{K}$).
+\end{enumerate}
+
+# Références
+
+\begin{itemize}
+\item Huffman, R.L., Fangmeier, D.D., Elliot, W.J., \& Workman, S.R.
+      (2013). \emph{Soil and Water Conservation Engineering}, 7$^{\text{e}}$ éd.,
+      ASABE, ch. 14, p. 321–349.
+\item Hooghoudt, S.B. (1940). Bijdragen tot de kennis van eenige
+      natuurkundige grootheden van den grond, 7. \emph{Versl. Landbouwk. Onderz.}
+\item van der Molen, W.H., \& Wesseling, J. (1991). A solution in closed
+      form and a series solution to replace the tables for thickness of the
+      equivalent layer in Hooghoudt's drain spacing formula.
+      \emph{Agric. Water Manage.}, 19 : 1–16.
+\item van Schilfgaarde, J. (1963). Tile drainage design procedure for
+      falling water tables. \emph{Am. Soc. Civil Eng. Proc.}, 89(IR2) : 1–13.
+\item ASAE Standards (1998, reaff. 2008). EP480 \emph{Design of Subsurface
+      Drains in Humid Areas}. ASABE, St. Joseph, Michigan.
+\end{itemize}
