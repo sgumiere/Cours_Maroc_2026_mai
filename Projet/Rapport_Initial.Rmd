@@ -1,0 +1,760 @@
+---
+title: "Projet Gestion de l'Eau --- Rapport reproductible"
+subtitle: "Caractérisation, drainage et optimisation d'assolement"
+author: "Étudiant 1 (Pédologue-Géostatisticien) -- Étudiant 2 (Hydrodynamicien) -- Étudiant 3 (Agronome-Environnementaliste)"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    theme: cosmo
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    number_sections: true
+    fig_caption: true
+    code_folding: show
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo      = TRUE,
+  warning   = FALSE,
+  message   = FALSE,
+  fig.align = "center",
+  fig.width = 8,
+  fig.height = 5,
+  dpi       = 110
+)
+options(scipen = 999, digits = 4)
+```
+
+# Comment utiliser ce squelette
+
+Ce fichier `Rapport_Initial.Rmd` est un **squelette reproductible** : il contient
+des chunks préremplis pour les 5 parties du projet. Vous devez :
+
+1. Compléter les chunks marqués `### À COMPLÉTER ###`.
+2. Exécuter le fichier de proche en proche (`Knit` ou Ctrl+Shift+K).
+3. Récupérer les tableaux et figures produits pour les **insérer dans le rapport
+   PDF final** (cf. `Consignes_Rapport_Gestion_Eau.pdf`).
+4. Joindre le `.Rmd` finalisé dans le dossier `R/` de l'archive de remise.
+
+**Le RMarkdown ne remplace pas le rapport** : il en garantit la reproductibilité
+et fournit la matière (chiffres, figures, tableaux).
+
+---
+
+# Paquets et données
+
+```{r packages}
+# Installer si nécessaire :
+# install.packages(c("readxl","minpack.lm","ggplot2","dplyr","tidyr",
+#                    "zoo","gstat","sp","sf","knitr","kableExtra"))
+
+library(readxl)
+library(minpack.lm)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(zoo)
+library(gstat)
+library(sp)
+library(knitr)
+library(kableExtra)
+```
+
+```{r donnees}
+fichier <- "Donnees_Projet_GE.xlsx"
+
+ret    <- read_excel(fichier, sheet = "01_Retention_brute")
+ksat   <- read_excel(fichier, sheet = "02_Ksat_spatial")
+clim   <- read_excel(fichier, sheet = "03_Climat")
+cult   <- read_excel(fichier, sheet = "04_Cultures")
+tensio <- read_excel(fichier, sheet = "05_Tensio_saison_prec")
+drain  <- read_excel(fichier, sheet = "06_Parametres_drainage")
+
+# Paramètres géotechniques (récupérés depuis l'Excel)
+z_drain <- drain$Valeur[drain$Parametre == "z_drain_m"]      # 1.0
+D_imp   <- drain$Valeur[drain$Parametre == "D_m"]            # 2.0
+u_drain <- drain$Valeur[drain$Parametre == "u_m"]            # 0.2
+WT_str  <- drain$Valeur[drain$Parametre == "WT_strict_m"]    # 0.7
+WT_tol  <- drain$Valeur[drain$Parametre == "WT_tolerant_m"]  # 0.5
+alpha_v <- drain$Valeur[drain$Parametre == "alpha_vanBeers"] # 1.15
+
+cat("Paramètres lus :\n")
+cat(sprintf("  z_drain = %.1f m  ;  D = %.1f m  ;  u = %.2f m\n",
+            z_drain, D_imp, u_drain))
+cat(sprintf("  WT_strict = %.1f m  ;  WT_tolerant = %.1f m\n", WT_str, WT_tol))
+```
+
+```{r surfaces}
+# Surfaces par zone (cf. énoncé)
+surfaces <- tibble(
+  Zone       = c("Zone_A", "Zone_B", "Zone_C"),
+  Surface_ha = c(1.5,      6.0,      2.5)
+)
+kable(surfaces, caption = "Surfaces des trois zones (10 ha au total)")
+```
+
+---
+
+# PARTIE I --- Caractérisation hydrodynamique des sols (25 pts)
+
+## I.1 -- Ajustement van Genuchten par zone
+
+```{r vg-model}
+# Modèle de van Genuchten (m = 1 - 1/n)
+vg <- function(h, theta_r, theta_s, alpha, n) {
+  m <- 1 - 1 / n
+  theta_r + (theta_s - theta_r) / (1 + (alpha * h)^n)^m
+}
+
+# Fonction d'ajustement non linéaire
+ajuste_vg <- function(h, theta) {
+  start <- list(theta_r = 0.05, theta_s = 0.45, alpha = 0.02, n = 1.4)
+  lower <- c(theta_r = 0.001, theta_s = 0.20, alpha = 0.001, n = 1.05)
+  upper <- c(theta_r = 0.15,  theta_s = 0.60, alpha = 0.5,   n = 3.0)
+  nlsLM(theta ~ vg(h, theta_r, theta_s, alpha, n),
+        start   = start,
+        lower   = lower,
+        upper   = upper,
+        control = nls.lm.control(maxiter = 200))
+}
+```
+
+```{r vg-fit}
+zones <- c("Zone_A", "Zone_B", "Zone_C")
+parametres  <- data.frame()
+predictions <- data.frame()
+fits        <- list()
+
+for (z in zones) {
+  fit  <- ajuste_vg(ret$h_cm, ret[[paste0("theta_", z)]])
+  fits[[z]] <- fit
+  p    <- coef(fit)
+  se   <- summary(fit)$coefficients[, "Std. Error"]
+  rmse <- sqrt(mean(residuals(fit)^2))
+  R2   <- 1 - sum(residuals(fit)^2) /
+              sum((ret[[paste0("theta_", z)]] -
+                   mean(ret[[paste0("theta_", z)]]))^2)
+
+  parametres <- rbind(parametres,
+    data.frame(
+      Zone       = z,
+      theta_r    = round(p["theta_r"], 4), se_thr = round(se["theta_r"], 4),
+      theta_s    = round(p["theta_s"], 4), se_ths = round(se["theta_s"], 4),
+      alpha_cm   = round(p["alpha"],   4), se_a   = round(se["alpha"],   4),
+      n          = round(p["n"],       3), se_n   = round(se["n"],       3),
+      m          = round(1 - 1 / p["n"], 3),
+      RMSE       = round(rmse, 4),
+      R2         = round(R2, 4)
+    ))
+
+  # Prédictions lissées pour le graphique
+  h_pred <- 10^seq(0, 4.5, length.out = 200)
+  predictions <- rbind(predictions,
+    data.frame(Zone = z, h_cm = h_pred,
+               theta = vg(h_pred, p["theta_r"], p["theta_s"],
+                          p["alpha"], p["n"])))
+}
+
+kable(parametres,
+      caption = "Paramètres van Genuchten par zone (± erreur-type, RMSE, R²)") %>%
+  kable_styling(full_width = FALSE)
+```
+
+## I.2 -- Courbes de rétention ajustées
+
+```{r vg-plot, fig.cap="Courbes de rétention ajustées (lignes) et mesures (points)"}
+mesures <- ret %>%
+  select(h_cm, theta_Zone_A, theta_Zone_B, theta_Zone_C) %>%
+  pivot_longer(-h_cm, names_to = "Zone", values_to = "theta") %>%
+  mutate(Zone = sub("theta_", "", Zone))
+
+ggplot() +
+  geom_line(data = predictions,
+            aes(x = h_cm, y = theta, color = Zone), linewidth = 1) +
+  geom_point(data = mesures,
+             aes(x = h_cm, y = theta, color = Zone), size = 2.5) +
+  scale_x_log10() +
+  labs(x = "Succion |h| (cm) -- échelle log",
+       y = expression(theta~(cm^3~cm^-3)),
+       title = "Courbes de rétention -- modèle van Genuchten",
+       subtitle = "Points = mesures terrain ; lignes = modèle ajusté") +
+  theme_minimal(base_size = 13)
+```
+
+## I.3 -- Indicateurs dérivés : capacité au champ, PFP, RU
+
+```{r indicateurs-sol}
+# pF 2,5 = succion 316 cm ; pF 4,2 = succion 15849 cm
+parametres$theta_CC <- sapply(seq_len(nrow(parametres)), function(i)
+  vg(316,
+     parametres$theta_r[i], parametres$theta_s[i],
+     parametres$alpha_cm[i], parametres$n[i]))
+
+parametres$theta_PFP <- sapply(seq_len(nrow(parametres)), function(i)
+  vg(15849,
+     parametres$theta_r[i], parametres$theta_s[i],
+     parametres$alpha_cm[i], parametres$n[i]))
+
+# RU sur 1 m de sol : 1 m = 1000 mm de profil, multiplié par (theta_CC - theta_PFP)
+parametres$RU_mm_1m <- round((parametres$theta_CC - parametres$theta_PFP) * 1000, 1)
+
+parametres %>%
+  select(Zone, theta_CC, theta_PFP, RU_mm_1m) %>%
+  mutate(theta_CC = round(theta_CC, 3),
+         theta_PFP = round(theta_PFP, 3)) %>%
+  kable(caption = "Capacité au champ, PFP et Réserve Utile (RU) sur 1 m") %>%
+  kable_styling(full_width = FALSE)
+```
+
+## I.4 -- Statistiques descriptives de Ksat par zone
+
+```{r ksat-stats}
+ksat_par_zone <- ksat %>%
+  group_by(Zone) %>%
+  summarise(
+    n        = n(),
+    Ksat_moy = round(mean(Ksat_cm_par_jour), 2),
+    Ksat_med = round(median(Ksat_cm_par_jour), 2),
+    Ksat_geom = round(exp(mean(log(Ksat_cm_par_jour))), 2),
+    Ksat_sd  = round(sd(Ksat_cm_par_jour), 2),
+    CV_pct   = round(100 * sd(Ksat_cm_par_jour) / mean(Ksat_cm_par_jour), 1)
+  )
+
+kable(ksat_par_zone,
+      caption = "Statistiques descriptives de Ksat (cm/jour) par zone") %>%
+  kable_styling(full_width = FALSE)
+```
+
+## I.5 -- Krigeage ordinaire de ln(Ksat)
+
+```{r krigeage}
+# Préparation des données spatiales
+ksat_sp <- ksat
+ksat_sp$ln_Ksat <- log(ksat_sp$Ksat_cm_par_jour)
+coordinates(ksat_sp) <- ~ X_m + Y_m
+
+# Variogramme expérimental
+vario_exp <- variogram(ln_Ksat ~ 1, ksat_sp,
+                       cutoff = 200, width = 25)
+
+# Ajustement d'un modèle (sphérique par défaut, à comparer)
+vario_mod <- fit.variogram(vario_exp,
+                           vgm(psill = 1, model = "Sph",
+                               range = 150, nugget = 0.1))
+print(vario_mod)
+
+plot(vario_exp, vario_mod,
+     main = "Variogramme expérimental et modèle ajusté (ln Ksat)")
+```
+
+```{r krigeage-carte, fig.cap="Carte krigée de Ksat (cm/j) et carte de la variance de krigeage"}
+# Grille de prédiction (champ 400 m x 250 m, maille 5 m)
+grille <- expand.grid(X_m = seq(0, 400, by = 5),
+                      Y_m = seq(0, 250, by = 5))
+coordinates(grille) <- ~ X_m + Y_m
+gridded(grille) <- TRUE
+
+# Krigeage ordinaire sur ln(Ksat)
+krg <- krige(ln_Ksat ~ 1, ksat_sp, grille, model = vario_mod)
+
+# Retour à l'échelle naturelle
+krg_df <- as.data.frame(krg)
+krg_df$Ksat_pred <- exp(krg_df$var1.pred + 0.5 * krg_df$var1.var)
+
+# Carte krigée
+p1 <- ggplot(krg_df, aes(X_m, Y_m, fill = Ksat_pred)) +
+  geom_raster() +
+  scale_fill_viridis_c(name = "Ksat\n(cm/j)") +
+  coord_fixed() +
+  labs(title = "Carte krigée de Ksat", x = "X (m)", y = "Y (m)") +
+  theme_minimal()
+
+# Variance de krigeage
+p2 <- ggplot(krg_df, aes(X_m, Y_m, fill = var1.var)) +
+  geom_raster() +
+  scale_fill_viridis_c(option = "magma",
+                       name = "Var(ln Ksat)") +
+  coord_fixed() +
+  labs(title = "Variance de krigeage", x = "X (m)", y = "Y (m)") +
+  theme_minimal()
+
+print(p1)
+print(p2)
+```
+
+```{r krigeage-validation}
+# Validation croisée leave-one-out
+cv <- krige.cv(ln_Ksat ~ 1, ksat_sp, model = vario_mod)
+biais  <- mean(cv$residual)
+rmse_k <- sqrt(mean(cv$residual^2))
+cat(sprintf("Validation croisée LOO -- biais = %.3f  ;  RMSE = %.3f\n",
+            biais, rmse_k))
+```
+
+## I.6 -- Moyennes géométriques de Ksat par zone (entrée pour Hooghoudt)
+
+```{r ksat-geom-zone}
+# Pour Hooghoudt on utilise la moyenne géométrique
+Ksat_geom <- ksat %>%
+  group_by(Zone) %>%
+  summarise(Ks_cm_j = round(exp(mean(log(Ksat_cm_par_jour))), 1)) %>%
+  left_join(surfaces, by = "Zone")
+
+kable(Ksat_geom,
+      caption = "Ksat moyen géométrique par zone (entrée Hooghoudt)") %>%
+  kable_styling(full_width = FALSE)
+```
+
+## I.7 -- Identification de la texture par zone
+
+```{r texture}
+texture_tbl <- parametres %>%
+  select(Zone, theta_s, n) %>%
+  left_join(Ksat_geom %>% select(Zone, Ks_cm_j), by = "Zone") %>%
+  mutate(
+    Texture_proba = case_when(
+      Ks_cm_j > 80   & n > 1.6 ~ "Sable / sable loameux",
+      Ks_cm_j > 15   & n > 1.3 ~ "Loam / loam sableux",
+      Ks_cm_j <= 15            ~ "Argile / argile limoneuse",
+      TRUE                     ~ "À discuter"
+    )
+  )
+
+kable(texture_tbl,
+      caption = "Texture probable (USDA) à partir de theta_s, n et Ksat") %>%
+  kable_styling(full_width = FALSE)
+```
+
+> **À justifier dans le rapport :** croiser ces résultats avec le triangle USDA et
+> les comportements observés sur les tensiomètres (feuille `05`) pendant la saison
+> N-1.
+
+---
+
+# PARTIE II --- Dimensionnement du drainage par zone (15 pts)
+
+## II.1 -- Coefficient de drainage de pointe q
+
+```{r q-coefficient}
+# Pluie maximale glissante sur 5 jours
+P     <- clim$Pluie_mm
+Pmax5 <- max(zoo::rollsum(P, k = 5, fill = 0, align = "right"))
+cat(sprintf("Pluie maximale sur 5 jours : %.1f mm\n", Pmax5))
+
+q_mmj <- Pmax5 / 5
+q_mj  <- q_mmj / 1000
+cat(sprintf("Coefficient retenu : q = %.2f mm/j = %.5f m/j\n", q_mmj, q_mj))
+
+# Comparaison à d'autres critères
+Pmax1 <- max(P)
+Pmax3 <- max(zoo::rollsum(P, k = 3, fill = 0, align = "right"))
+
+tibble(
+  Critere = c("P_max,1j / 3", "P_max,3j / 3", "P_max,5j / 5"),
+  q_mm_j  = round(c(Pmax1 / 3, Pmax3 / 3, Pmax5 / 5), 2)
+) %>%
+  kable(caption = "Comparaison de critères pour le coefficient q") %>%
+  kable_styling(full_width = FALSE)
+```
+
+## II.2 -- Formules de Hooghoudt et van Beers
+
+```{r hooghoudt-fun}
+hooghoudt_L <- function(K_mj, h, d, q) {
+  sqrt(4 * K_mj * h * (2 * d + h) / q)
+}
+
+hooghoudt_d <- function(L, D, u = 0.2, alpha = 1.15) {
+  D / (1 + (D / L) * (8 / pi * log(D / u) - alpha))
+}
+```
+
+## II.3 -- Calcul itératif de L par zone et par critère
+
+```{r hooghoudt-iter}
+# Critères de profondeur de nappe (cf. énoncé)
+criteres <- tibble(
+  Critere  = c("Strict (Fraise/PdT)", "Tolerant (Tomate/Mais)"),
+  WT_cible = c(WT_str, WT_tol),
+  h        = z_drain - c(WT_str, WT_tol)
+)
+
+res <- expand.grid(Zone    = Ksat_geom$Zone,
+                   Critere = criteres$Critere,
+                   stringsAsFactors = FALSE) %>%
+  left_join(Ksat_geom, by = "Zone") %>%
+  left_join(criteres,  by = "Critere") %>%
+  mutate(K_mj   = Ks_cm_j / 100,
+         L_iter = hooghoudt_L(K_mj, h, D_imp, q_mj))
+
+# 5 itérations sur d
+for (i in 1:5) {
+  res$d_eq   <- hooghoudt_d(res$L_iter, D_imp, u_drain, alpha_v)
+  res$L_iter <- hooghoudt_L(res$K_mj, res$h, res$d_eq, q_mj)
+}
+
+res <- res %>%
+  mutate(L_iter            = round(L_iter, 1),
+         d_eq              = round(d_eq, 2),
+         lineaire_m_par_ha = round(10000 / L_iter, 0),
+         drains_par_zone   = ceiling(Surface_ha * lineaire_m_par_ha))
+
+kable(res %>% select(Zone, Critere, Ks_cm_j, h, d_eq, L_iter,
+                     lineaire_m_par_ha, drains_par_zone),
+      caption = "Espacement L*, profondeur équivalente d et linéaire de drains") %>%
+  kable_styling(full_width = FALSE)
+```
+
+## II.4 -- Sensibilité à K et à q
+
+```{r sensibilite-Kq}
+sens <- expand.grid(Zone    = Ksat_geom$Zone,
+                    facteur = c(0.7, 1.0, 1.3)) %>%
+  left_join(Ksat_geom, by = "Zone") %>%
+  mutate(K_mj = (Ks_cm_j / 100) * facteur,
+         L_K  = round(hooghoudt_L(K_mj, h = 0.5, d = D_imp, q = q_mj), 1)) %>%
+  select(Zone, facteur, L_K) %>%
+  pivot_wider(names_from = facteur, values_from = L_K,
+              names_prefix = "K_x")
+
+kable(sens,
+      caption = "Sensibilité de L (m) à K (+/- 30 %), critère tolérant h=0,5 m") %>%
+  kable_styling(full_width = FALSE)
+
+sens_q <- expand.grid(Zone   = Ksat_geom$Zone,
+                      q_fact = c(0.5, 1.0, 1.5)) %>%
+  left_join(Ksat_geom, by = "Zone") %>%
+  mutate(K_mj = Ks_cm_j / 100,
+         L_q  = round(hooghoudt_L(K_mj, h = 0.5,
+                                  d = D_imp, q = q_mj * q_fact), 1)) %>%
+  select(Zone, q_fact, L_q) %>%
+  pivot_wider(names_from = q_fact, values_from = L_q,
+              names_prefix = "q_x")
+
+kable(sens_q,
+      caption = "Sensibilité de L (m) à q (+/- 50 %), critère tolérant h=0,5 m") %>%
+  kable_styling(full_width = FALSE)
+```
+
+## II.5 -- Schéma indicatif du réseau de drainage
+
+```{r drainage-schema, fig.cap="Schéma indicatif du réseau de drainage (espacements par zone)"}
+# Récupère les L* du critère tolérant pour le schéma
+L_use <- res %>% filter(Critere == "Tolerant (Tomate/Mais)") %>%
+  select(Zone, L_iter)
+print(L_use)
+
+# Schéma simple : drains parallèles à l'axe X, espacement L par zone
+ggplot() +
+  # Zones (rectangles indicatifs)
+  geom_rect(aes(xmin = 0,   xmax = 150, ymin = 0, ymax = 100),
+            fill = "#F4D6A1", alpha = 0.5) +
+  geom_rect(aes(xmin = 0,   xmax = 400, ymin = 100, ymax = 200),
+            fill = "#A8C8A6", alpha = 0.5) +
+  geom_rect(aes(xmin = 150, xmax = 400, ymin = 0, ymax = 100),
+            fill = "#A8C8A6", alpha = 0.5) +
+  geom_rect(aes(xmin = 0,   xmax = 400, ymin = 200, ymax = 250),
+            fill = "#9CB5D1", alpha = 0.5) +
+  annotate("text", x = 75,  y = 50,  label = "Zone A") +
+  annotate("text", x = 200, y = 150, label = "Zone B") +
+  annotate("text", x = 200, y = 225, label = "Zone C") +
+  coord_fixed() +
+  labs(title = "Schéma indicatif (à enrichir avec les drains)",
+       x = "X (m)", y = "Y (m)") +
+  theme_minimal()
+```
+
+> **À faire :** tracer les drains parallèles à l'axe X avec les espacements
+> calculés `L_iter` (un drain tous les L mètres en Y), ajouter le collecteur
+> en bordure ouest et l'exutoire.
+
+---
+
+# PARTIE III --- Simulation HYDRUS-1D (20 pts)
+
+## III.1 -- Coefficient cultural Kc(t) (FAO-56)
+
+```{r kc-fao56}
+# Construction du Kc journalier par culture (4 phases)
+construire_Kc <- function(culture) {
+  c_row <- cult[cult$Culture == culture, ]
+  Lini <- c_row$Lini; Ldev <- c_row$Ldev
+  Lmid <- c_row$Lmid; Lend <- c_row$Lend
+  Kini <- c_row$Kc_ini; Kmid <- c_row$Kc_mid; Kend <- c_row$Kc_fin
+  cycle <- Lini + Ldev + Lmid + Lend
+  t <- 1:cycle
+  Kc <- numeric(cycle)
+  Kc[1:Lini]                         <- Kini
+  Kc[(Lini+1):(Lini+Ldev)]           <- seq(Kini, Kmid, length.out = Ldev)
+  Kc[(Lini+Ldev+1):(Lini+Ldev+Lmid)] <- Kmid
+  Kc[(Lini+Ldev+Lmid+1):cycle]       <- seq(Kmid, Kend, length.out = Lend)
+  tibble(Jour = t, Kc = Kc, Culture = culture)
+}
+
+kc_all <- bind_rows(lapply(cult$Culture, construire_Kc))
+
+ggplot(kc_all, aes(Jour, Kc, color = Culture)) +
+  geom_line(linewidth = 1) +
+  labs(title = "Coefficient cultural Kc(t) -- FAO-56",
+       x = "Jour du cycle", y = "Kc (-)") +
+  theme_minimal()
+```
+
+## III.2 -- Calcul de ETc(t) par culture
+
+```{r etc}
+ET0   <- clim$ET0_mm
+n_max <- nrow(clim)
+
+etc_long <- bind_rows(lapply(cult$Culture, function(c) {
+  kc <- construire_Kc(c)
+  kc <- head(kc, n_max)
+  if (nrow(kc) < n_max) {
+    kc <- bind_rows(kc, tibble(Jour = (nrow(kc)+1):n_max,
+                               Kc = tail(kc$Kc, 1),
+                               Culture = c))
+  }
+  tibble(Jour = 1:n_max, Culture = c, ET0 = ET0,
+         Kc = kc$Kc, ETc = ET0 * kc$Kc)
+}))
+
+etc_long %>% group_by(Culture) %>%
+  summarise(ETc_cum_mm = round(sum(ETc), 1)) %>%
+  kable(caption = "ETc cumulée par culture sur 85 jours") %>%
+  kable_styling(full_width = FALSE)
+```
+
+## III.3 -- Génération du fichier BC (atmospheric.in) pour HYDRUS
+
+```{r bc-export}
+# Apport hebdomadaire = ETc cumulée du lundi au dimanche, appliqué le lundi
+exporter_bc <- function(culture) {
+  d <- etc_long %>% filter(Culture == culture)
+  d <- d %>%
+    mutate(Pluie = clim$Pluie_mm,
+           Semaine = (Jour - 1) %/% 7 + 1)
+  besoin_sem <- d %>% group_by(Semaine) %>%
+    summarise(ETc_sem = sum(ETc), Pluie_sem = sum(Pluie)) %>%
+    mutate(Irr_sem = pmax(0, ETc_sem - Pluie_sem))
+  d <- d %>% left_join(besoin_sem, by = "Semaine") %>%
+    mutate(Irrigation = ifelse((Jour - 1) %% 7 == 0, Irr_sem, 0),
+           Apport_net_mm = Pluie + Irrigation - ETc)
+  fic <- sprintf("BC_HYDRUS_%s.csv", culture)
+  write.csv(d %>% select(Jour, Pluie, Irrigation, ETc, Apport_net_mm),
+            fic, row.names = FALSE)
+  cat("Exporté :", fic, "\n")
+  invisible(d)
+}
+
+for (c in cult$Culture) exporter_bc(c)
+```
+
+> **Workflow HYDRUS-1D :**
+> 1. Ouvrir HYDRUS-1D et créer 12 projets (4 cultures × 3 zones).
+> 2. Saisir les paramètres VG (Partie I) pour chaque zone.
+> 3. Importer la chronique `BC_HYDRUS_*.csv` (Pluie + Irrigation, ET0) en
+>    Time Variable Boundary Conditions.
+> 4. Régler le modèle d'extraction racinaire de Feddes avec les seuils `h_3`
+>    et `h_50` de la feuille `04_Cultures`.
+> 5. Lancer chaque simulation, exporter les sorties (T_act.out, Balance.out,
+>    Profile.out) dans `HYDRUS/<culture>_<zone>/`.
+
+## III.4 -- Lecture des sorties HYDRUS-1D
+
+```{r hydrus-readers, eval=FALSE}
+# Cette section EST À EXÉCUTER après avoir lancé les simulations HYDRUS.
+# Adapter les chemins d'accès aux dossiers HYDRUS générés.
+
+lire_balance <- function(chemin) {
+  # Fichier T_Level.out / Balance.out à parser
+  # -> renvoyer un tibble (Jour, T_act, T_pot, Drainage_cum, Stock)
+  ### À COMPLÉTER ###
+}
+
+resultats_hydrus <- expand.grid(Culture = cult$Culture,
+                                Zone    = zones,
+                                stringsAsFactors = FALSE)
+
+# Boucle de lecture (placeholder)
+resultats_hydrus <- resultats_hydrus %>%
+  mutate(
+    V_irr_mm = NA_real_,
+    D_prof_mm = NA_real_,
+    T_act_mm  = NA_real_,
+    T_pot_mm  = NA_real_,
+    Ta_sur_Tp = NA_real_,
+    Stock_mm  = NA_real_,
+    err_bilan = NA_real_
+  )
+
+kable(resultats_hydrus, caption = "Synthèse des 12 simulations HYDRUS (à remplir)")
+```
+
+---
+
+# PARTIE IV --- Optimisation de l'assolement (30 pts)
+
+## IV.1 -- Matrice des indicateurs 4 cultures × 3 zones
+
+```{r matrice-indicateurs, eval=FALSE}
+# Cette section nécessite les résultats HYDRUS de la Partie III.
+# Pour la rédaction, remplir `resultats_hydrus` ci-dessus puis exécuter ce chunk.
+
+# Coefficients Ky (FAO-33) à compléter par culture
+Ky <- tibble(
+  Culture = c("Tomate", "Pomme_terre", "Fraise", "Mais"),
+  Ky      = c(1.05,     1.10,          0.85,     1.25)
+)
+
+indic <- resultats_hydrus %>%
+  left_join(cult %>% select(Culture, Rdt_potentiel_t_ha,
+                            Prix_DH_par_t), by = "Culture") %>%
+  left_join(Ky, by = "Culture") %>%
+  mutate(
+    Y_rel  = pmax(0, 1 - Ky * (1 - Ta_sur_Tp)),                # rendement relatif
+    Rdt    = Y_rel * Rdt_potentiel_t_ha,                       # t/ha
+    P_eff  = sum(clim$Pluie_mm),                               # mm
+    WP     = (Rdt * 1000) / ((V_irr_mm + P_eff) * 10),          # kg/m3
+    WF     = ifelse(WP > 0, 1 / WP, NA_real_),                  # m3/kg
+    eta_D  = 1 - D_prof_mm / (V_irr_mm + P_eff),
+    Marge_DHha = Rdt * Prix_DH_par_t                           # DH/ha (hors coût eau)
+  )
+
+kable(indic, caption = "Matrice 12 combinaisons -- indicateurs environnementaux")
+```
+
+## IV.2 -- Les 5 scénarios d'assolement
+
+```{r scenarios, eval=FALSE}
+indic_par_zone <- indic %>% group_by(Zone) %>%
+  mutate(Surface_ha = surfaces$Surface_ha[match(Zone, surfaces$Zone)])
+
+# S0 : monoculture homogène (4 variantes)
+S0 <- lapply(cult$Culture, function(c) {
+  indic_par_zone %>% filter(Culture == c) %>%
+    summarise(Scenario = paste0("S0_", c),
+              V_irr_m3 = sum(V_irr_mm/1000 * Surface_ha * 10000),
+              D_total_m3 = sum(D_prof_mm/1000 * Surface_ha * 10000),
+              Marge_DH   = sum(Marge_DHha * Surface_ha),
+              Prod_t     = sum(Rdt * Surface_ha))
+}) %>% bind_rows()
+
+# S1 : marge maximale par zone
+S1 <- indic_par_zone %>% group_by(Zone) %>%
+  slice_max(Marge_DHha, n = 1) %>% ungroup() %>%
+  summarise(Scenario = "S1_marge_max",
+            V_irr_m3 = sum(V_irr_mm/1000 * Surface_ha * 10000),
+            D_total_m3 = sum(D_prof_mm/1000 * Surface_ha * 10000),
+            Marge_DH   = sum(Marge_DHha * Surface_ha),
+            Prod_t     = sum(Rdt * Surface_ha))
+
+# S2 : volume d'eau minimum
+S2 <- indic_par_zone %>% group_by(Zone) %>%
+  slice_min(V_irr_mm, n = 1) %>% ungroup() %>%
+  summarise(Scenario = "S2_eau_min",
+            V_irr_m3 = sum(V_irr_mm/1000 * Surface_ha * 10000),
+            D_total_m3 = sum(D_prof_mm/1000 * Surface_ha * 10000),
+            Marge_DH   = sum(Marge_DHha * Surface_ha),
+            Prod_t     = sum(Rdt * Surface_ha))
+
+# S3 : empreinte eau minimale
+S3 <- indic_par_zone %>% group_by(Zone) %>%
+  slice_min(WF, n = 1) %>% ungroup() %>%
+  summarise(Scenario = "S3_WF_min",
+            V_irr_m3 = sum(V_irr_mm/1000 * Surface_ha * 10000),
+            D_total_m3 = sum(D_prof_mm/1000 * Surface_ha * 10000),
+            Marge_DH   = sum(Marge_DHha * Surface_ha),
+            Prod_t     = sum(Rdt * Surface_ha))
+
+# S4 : multicritère = drainage minimal avec Y_rel >= 0.85
+S4 <- indic_par_zone %>%
+  filter(Y_rel >= 0.85) %>%
+  group_by(Zone) %>% slice_min(D_prof_mm, n = 1) %>% ungroup() %>%
+  summarise(Scenario = "S4_multi",
+            V_irr_m3 = sum(V_irr_mm/1000 * Surface_ha * 10000),
+            D_total_m3 = sum(D_prof_mm/1000 * Surface_ha * 10000),
+            Marge_DH   = sum(Marge_DHha * Surface_ha),
+            Prod_t     = sum(Rdt * Surface_ha))
+
+scenarios <- bind_rows(S0, S1, S2, S3, S4)
+kable(scenarios, caption = "Synthèse des 5 scénarios d'assolement (10 ha)")
+```
+
+## IV.3 -- Pareto empreinte eau vs marge
+
+```{r pareto, eval=FALSE}
+scenarios <- scenarios %>%
+  mutate(WF_global = V_irr_m3 / (Prod_t * 1000))   # m3/kg moyen
+
+ggplot(scenarios, aes(WF_global, Marge_DH, label = Scenario)) +
+  geom_point(size = 4, color = "#1F4E79") +
+  geom_text(vjust = -0.8, size = 3) +
+  labs(title = "Pareto -- empreinte eau (m3/kg) vs marge brute (DH)",
+       x = "Empreinte eau globale (m3/kg)",
+       y = "Marge brute totale (DH)") +
+  theme_minimal()
+```
+
+---
+
+# PARTIE V --- Analyse environnementale et économique (10 pts)
+
+## V.1 -- Bilan de l'assolement retenu
+
+```{r bilan-final, eval=FALSE}
+scenario_retenu <- "S4_multi"   # à choisir et justifier dans le rapport
+
+bilan <- scenarios %>% filter(Scenario == scenario_retenu)
+print(bilan)
+
+# Comparaison à la monoculture de pomme de terre (S0_Pomme_terre)
+ref <- scenarios %>% filter(Scenario == "S0_Pomme_terre")
+
+comp <- tibble(
+  Indicateur = c("Volume d'eau (m3)", "Drainage total (m3)",
+                 "Production (t)", "Marge brute (DH)"),
+  Reference  = c(ref$V_irr_m3, ref$D_total_m3, ref$Prod_t, ref$Marge_DH),
+  Retenu     = c(bilan$V_irr_m3, bilan$D_total_m3, bilan$Prod_t, bilan$Marge_DH)
+) %>%
+  mutate(Variation_pct = round(100 * (Retenu - Reference) / Reference, 1))
+
+kable(comp, caption = "Comparaison de l'assolement retenu à la monoculture pomme de terre")
+```
+
+## V.2 -- Effets environnementaux indirects (à discuter dans le rapport)
+
+> Trois effets à discuter :
+>
+> 1. **Lessivage d'azote** (NO3-) lié au drainage profond -- corrélation avec
+>    `D_total_m3`.
+> 2. **Salinisation** : un drainage insuffisant en zone C peut entraîner une
+>    remontée capillaire de sels.
+> 3. **Biodiversité de la rotation** : monoculture vs assolement diversifié.
+
+## V.3 -- Recommandations chiffrées
+
+> Formuler dans le rapport **3 recommandations concrètes** sous la forme :
+>
+> *Recommandation X -- Action : ... ; Cible chiffrée : ... ; Bénéfice attendu : ...*
+
+---
+
+# Reproductibilité
+
+```{r session-info}
+sessionInfo()
+```
+
+---
+
+# Annexes (placeholders)
+
+- **Annexe A** : sorties brutes des ajustements VG -- `summary(fits[["Zone_X"]])`.
+- **Annexe B** : captures HYDRUS-1D (Geometry, Hydraulic Model, Root Uptake).
+- **Annexe C** : tableurs des indicateurs (`resultats_hydrus.csv`).
+- **Annexe D** : analyse de robustesse complète des 5 scénarios.
+- **Annexe E** : déclaration anti-plagiat signée.
+- **Annexe F** : répartition signée des contributions des 3 étudiants.
