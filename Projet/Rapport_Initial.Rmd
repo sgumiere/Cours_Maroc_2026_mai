@@ -102,111 +102,65 @@ kable(surfaces, caption = "Surfaces des trois zones (10 ha au total)")
 
 ## I.1 -- Ajustement van Genuchten par zone
 
-```{r vg-model}
-# Modèle de van Genuchten (m = 1 - 1/n)
-vg <- function(h, theta_r, theta_s, alpha, n) {
-  m <- 1 - 1 / n
-  theta_r + (theta_s - theta_r) / (1 + (alpha * h)^n)^m
-}
-
-# Fonction d'ajustement non linéaire
-ajuste_vg <- function(h, theta) {
-  start <- list(theta_r = 0.05, theta_s = 0.45, alpha = 0.02, n = 1.4)
-  lower <- c(theta_r = 0.001, theta_s = 0.20, alpha = 0.001, n = 1.05)
-  upper <- c(theta_r = 0.15,  theta_s = 0.60, alpha = 0.5,   n = 3.0)
-  nlsLM(theta ~ vg(h, theta_r, theta_s, alpha, n),
-        start   = start,
-        lower   = lower,
-        upper   = upper,
-        control = nls.lm.control(maxiter = 200))
-}
-```
+> **### À COMPLÉTER ###**
+>
+> Vous devez ajuster le modèle de **van Genuchten (1980)** à chaque zone (A, B, C)
+> à partir des données de la feuille `01_Retention_brute`.
+>
+> Étapes attendues :
+>
+> 1. Écrire la fonction `vg(h, theta_r, theta_s, alpha, n)` avec la
+>    contrainte `m = 1 - 1/n`.
+> 2. Utiliser `nlsLM` (package `minpack.lm`) pour ajuster les **4 paramètres**
+>    sur les couples `(h_cm, theta_Zone_*)`.
+> 3. Choisir et justifier les **valeurs initiales** et les **bornes** des
+>    paramètres (cohérence physique : `theta_r < theta_s`, `n > 1`, etc.).
+> 4. Construire un tableau `parametres` avec, pour chaque zone :
+>    `theta_r, theta_s, alpha, n, m, RMSE, R²` et les **erreurs-types**.
+> 5. Discuter la qualité d'ajustement (résidus, R², RMSE) dans le rapport.
 
 ```{r vg-fit}
 zones <- c("Zone_A", "Zone_B", "Zone_C")
-parametres  <- data.frame()
-predictions <- data.frame()
-fits        <- list()
 
-for (z in zones) {
-  fit  <- ajuste_vg(ret$h_cm, ret[[paste0("theta_", z)]])
-  fits[[z]] <- fit
-  p    <- coef(fit)
-  se   <- summary(fit)$coefficients[, "Std. Error"]
-  rmse <- sqrt(mean(residuals(fit)^2))
-  R2   <- 1 - sum(residuals(fit)^2) /
-              sum((ret[[paste0("theta_", z)]] -
-                   mean(ret[[paste0("theta_", z)]]))^2)
+# parametres  <- data.frame()   # à construire (cf. consignes ci-dessus)
+# predictions <- data.frame()   # prédictions lissées pour le graphique
+# fits        <- list()         # objets nls pour l'annexe A
 
-  parametres <- rbind(parametres,
-    data.frame(
-      Zone       = z,
-      theta_r    = round(p["theta_r"], 4), se_thr = round(se["theta_r"], 4),
-      theta_s    = round(p["theta_s"], 4), se_ths = round(se["theta_s"], 4),
-      alpha_cm   = round(p["alpha"],   4), se_a   = round(se["alpha"],   4),
-      n          = round(p["n"],       3), se_n   = round(se["n"],       3),
-      m          = round(1 - 1 / p["n"], 3),
-      RMSE       = round(rmse, 4),
-      R2         = round(R2, 4)
-    ))
-
-  # Prédictions lissées pour le graphique
-  h_pred <- 10^seq(0, 4.5, length.out = 200)
-  predictions <- rbind(predictions,
-    data.frame(Zone = z, h_cm = h_pred,
-               theta = vg(h_pred, p["theta_r"], p["theta_s"],
-                          p["alpha"], p["n"])))
-}
-
-kable(parametres,
-      caption = "Paramètres van Genuchten par zone (± erreur-type, RMSE, R²)") %>%
-  kable_styling(full_width = FALSE)
+### À COMPLÉTER : écrire la boucle d'ajustement et remplir `parametres` ###
 ```
 
 ## I.2 -- Courbes de rétention ajustées
 
-```{r vg-plot, fig.cap="Courbes de rétention ajustées (lignes) et mesures (points)"}
-mesures <- ret %>%
-  select(h_cm, theta_Zone_A, theta_Zone_B, theta_Zone_C) %>%
-  pivot_longer(-h_cm, names_to = "Zone", values_to = "theta") %>%
-  mutate(Zone = sub("theta_", "", Zone))
+> **### À COMPLÉTER ###**
+>
+> Une fois `parametres` et `predictions` calculés en I.1, tracer sur un même
+> graphique (échelle log en abscisse) :
+>
+> - les **mesures** (points) pour chaque zone,
+> - les **courbes ajustées** (lignes continues) issues du modèle VG.
+>
+> Soigner la légende, les unités et le titre. Commenter les différences entre
+> zones (texture, pente à l'inflexion, valeur de `theta_s`).
 
-ggplot() +
-  geom_line(data = predictions,
-            aes(x = h_cm, y = theta, color = Zone), linewidth = 1) +
-  geom_point(data = mesures,
-             aes(x = h_cm, y = theta, color = Zone), size = 2.5) +
-  scale_x_log10() +
-  labs(x = "Succion |h| (cm) -- échelle log",
-       y = expression(theta~(cm^3~cm^-3)),
-       title = "Courbes de rétention -- modèle van Genuchten",
-       subtitle = "Points = mesures terrain ; lignes = modèle ajusté") +
-  theme_minimal(base_size = 13)
+```{r vg-plot, eval=FALSE, fig.cap="Courbes de rétention ajustées (lignes) et mesures (points)"}
+### À COMPLÉTER : ggplot des mesures + courbes VG ajustées ###
 ```
 
 ## I.3 -- Indicateurs dérivés : capacité au champ, PFP, RU
 
-```{r indicateurs-sol}
-# pF 2,5 = succion 316 cm ; pF 4,2 = succion 15849 cm
-parametres$theta_CC <- sapply(seq_len(nrow(parametres)), function(i)
-  vg(316,
-     parametres$theta_r[i], parametres$theta_s[i],
-     parametres$alpha_cm[i], parametres$n[i]))
+> **### À COMPLÉTER ###**
+>
+> À partir des paramètres VG ajustés en I.1, calculer pour chaque zone :
+>
+> - **theta_CC** : teneur en eau à pF 2,5 (succion = 316 cm).
+> - **theta_PFP** : teneur en eau à pF 4,2 (succion = 15 849 cm).
+> - **RU** sur 1 m de sol (en mm) = `(theta_CC - theta_PFP) * 1000`.
+>
+> Présenter le résultat sous forme de tableau et commenter les écarts entre
+> zones (la RU conditionne directement la fréquence d'irrigation).
 
-parametres$theta_PFP <- sapply(seq_len(nrow(parametres)), function(i)
-  vg(15849,
-     parametres$theta_r[i], parametres$theta_s[i],
-     parametres$alpha_cm[i], parametres$n[i]))
-
-# RU sur 1 m de sol : 1 m = 1000 mm de profil, multiplié par (theta_CC - theta_PFP)
-parametres$RU_mm_1m <- round((parametres$theta_CC - parametres$theta_PFP) * 1000, 1)
-
-parametres %>%
-  select(Zone, theta_CC, theta_PFP, RU_mm_1m) %>%
-  mutate(theta_CC = round(theta_CC, 3),
-         theta_PFP = round(theta_PFP, 3)) %>%
-  kable(caption = "Capacité au champ, PFP et Réserve Utile (RU) sur 1 m") %>%
-  kable_styling(full_width = FALSE)
+```{r indicateurs-sol, eval=FALSE}
+### À COMPLÉTER : calcul de theta_CC, theta_PFP et RU à partir de `parametres` ###
 ```
 
 ## I.4 -- Statistiques descriptives de Ksat par zone
@@ -230,68 +184,39 @@ kable(ksat_par_zone,
 
 ## I.5 -- Krigeage ordinaire de ln(Ksat)
 
-```{r krigeage}
-# Préparation des données spatiales
-ksat_sp <- ksat
-ksat_sp$ln_Ksat <- log(ksat_sp$Ksat_cm_par_jour)
-coordinates(ksat_sp) <- ~ X_m + Y_m
+> **### À COMPLÉTER ###**
+>
+> Réaliser le **krigeage ordinaire** de `ln(Ksat)` sur l'ensemble de la parcelle
+> (champ 400 m × 250 m, maille 5 m). Étapes attendues :
+>
+> 1. **Transformation logarithmique** : justifier le recours à `ln(Ksat)`
+>    (distribution log-normale, cf. histogramme de I.4).
+> 2. **Variogramme expérimental** : calculer avec `gstat::variogram` en
+>    choisissant `cutoff` et `width` adaptés à la disposition des points.
+> 3. **Ajustement** d'un modèle théorique (sphérique, exponentiel, gaussien) —
+>    **comparer au moins deux modèles** et justifier le choix
+>    (pépite, palier, portée).
+> 4. **Krigeage** sur la grille avec `gstat::krige`.
+> 5. **Retour à l'échelle naturelle** : utiliser la correction log-normale
+>    `Ksat = exp(prediction + 0,5 × variance)`.
+> 6. **Cartes** : produire deux cartes (Ksat prédit, variance de krigeage) et
+>    interpréter les zones de forte incertitude.
+> 7. **Validation croisée LOO** (`krige.cv`) : biais et RMSE.
+>
+> Le krigeage n'est pas réutilisé tel quel pour Hooghoudt (qui utilise la moyenne
+> géométrique par zone, cf. I.6) ; il sert à **caractériser la structure spatiale**
+> et à **discuter de l'hétérogénéité** des sols.
 
-# Variogramme expérimental
-vario_exp <- variogram(ln_Ksat ~ 1, ksat_sp,
-                       cutoff = 200, width = 25)
-
-# Ajustement d'un modèle (sphérique par défaut, à comparer)
-vario_mod <- fit.variogram(vario_exp,
-                           vgm(psill = 1, model = "Sph",
-                               range = 150, nugget = 0.1))
-print(vario_mod)
-
-plot(vario_exp, vario_mod,
-     main = "Variogramme expérimental et modèle ajusté (ln Ksat)")
+```{r krigeage, eval=FALSE}
+### À COMPLÉTER : variogramme expérimental + ajustement d'un modèle ###
 ```
 
-```{r krigeage-carte, fig.cap="Carte krigée de Ksat (cm/j) et carte de la variance de krigeage"}
-# Grille de prédiction (champ 400 m x 250 m, maille 5 m)
-grille <- expand.grid(X_m = seq(0, 400, by = 5),
-                      Y_m = seq(0, 250, by = 5))
-coordinates(grille) <- ~ X_m + Y_m
-gridded(grille) <- TRUE
-
-# Krigeage ordinaire sur ln(Ksat)
-krg <- krige(ln_Ksat ~ 1, ksat_sp, grille, model = vario_mod)
-
-# Retour à l'échelle naturelle
-krg_df <- as.data.frame(krg)
-krg_df$Ksat_pred <- exp(krg_df$var1.pred + 0.5 * krg_df$var1.var)
-
-# Carte krigée
-p1 <- ggplot(krg_df, aes(X_m, Y_m, fill = Ksat_pred)) +
-  geom_raster() +
-  scale_fill_viridis_c(name = "Ksat\n(cm/j)") +
-  coord_fixed() +
-  labs(title = "Carte krigée de Ksat", x = "X (m)", y = "Y (m)") +
-  theme_minimal()
-
-# Variance de krigeage
-p2 <- ggplot(krg_df, aes(X_m, Y_m, fill = var1.var)) +
-  geom_raster() +
-  scale_fill_viridis_c(option = "magma",
-                       name = "Var(ln Ksat)") +
-  coord_fixed() +
-  labs(title = "Variance de krigeage", x = "X (m)", y = "Y (m)") +
-  theme_minimal()
-
-print(p1)
-print(p2)
+```{r krigeage-carte, eval=FALSE, fig.cap="Carte krigée de Ksat (cm/j) et carte de la variance de krigeage"}
+### À COMPLÉTER : krigeage sur la grille + cartes Ksat et variance ###
 ```
 
-```{r krigeage-validation}
-# Validation croisée leave-one-out
-cv <- krige.cv(ln_Ksat ~ 1, ksat_sp, model = vario_mod)
-biais  <- mean(cv$residual)
-rmse_k <- sqrt(mean(cv$residual^2))
-cat(sprintf("Validation croisée LOO -- biais = %.3f  ;  RMSE = %.3f\n",
-            biais, rmse_k))
+```{r krigeage-validation, eval=FALSE}
+### À COMPLÉTER : validation croisée leave-one-out (biais, RMSE) ###
 ```
 
 ## I.6 -- Moyennes géométriques de Ksat par zone (entrée pour Hooghoudt)
@@ -310,7 +235,14 @@ kable(Ksat_geom,
 
 ## I.7 -- Identification de la texture par zone
 
-```{r texture}
+> **### À COMPLÉTER ###** (nécessite les paramètres VG de I.1 et Ksat_geom de I.6)
+>
+> Croiser les valeurs ajustées de `theta_s` et `n` (Partie I.1) avec la moyenne
+> géométrique de Ksat (I.6) pour proposer une texture USDA probable par zone.
+> Justifier en confrontant au triangle USDA et au comportement des tensiomètres
+> (feuille `05_Tensio_saison_prec`).
+
+```{r texture, eval=FALSE}
 texture_tbl <- parametres %>%
   select(Zone, theta_s, n) %>%
   left_join(Ksat_geom %>% select(Zone, Ks_cm_j), by = "Zone") %>%
